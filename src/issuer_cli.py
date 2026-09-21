@@ -177,7 +177,7 @@ def init(ctx: click.Context, domain: str, force: bool) -> None:
     click.echo(f"  Issuer DID:     {issuer_did}")
     click.echo(f"  Pubkey hash:    {pubkey_hash}")
     click.echo()
-    click.echo("Pin this pubkey hash in the gateway's TOFU store on first contact.")
+    click.echo("Pin this pubkey hash in the gateway's keystore (pinned-only, DD-001).")
 
 
 # ---------------------------------------------------------------------------
@@ -191,9 +191,16 @@ def init(ctx: click.Context, domain: str, force: bool) -> None:
     help="Device's contribution U as 66-hex-char compressed point.",
 )
 @click.option(
-    "--cert-info",
+    "--domain",
     required=True,
-    help="Certificate metadata string (opaque to issuer; gateway parses it).",
+    help="Issuer domain; the issuer DID is did:web:<domain>.",
+)
+@click.option(
+    "--max-age-hours",
+    default=8760,
+    show_default=True,
+    type=click.IntRange(1, 65535),
+    help="Certificate validity in whole hours (default: 1 year).",
 )
 @click.option(
     "--output-json",
@@ -205,13 +212,19 @@ def init(ctx: click.Context, domain: str, force: bool) -> None:
 @click.pass_context
 def provision(ctx: click.Context,
               device_u_hex: str,
-              cert_info: str,
+              domain: str,
+              max_age_hours: int,
               output_json: Optional[Path]) -> None:
     """Issue an implicit certificate for a device.
 
-    The device must have already generated its contribution (u, U) and sent
-    U along with desired cert_info. The issuer returns (R, s, cert_info).
+    The device sends only its contribution U. The issuer builds cert_info
+    itself (its own issuer id, the current time, the lifetime), so a
+    requester cannot choose its own issue date or issuer. Returns
+    (R, s, cert_info).
     """
+    from datetime import datetime, timezone
+    from src.cert_info import decode_cert_info, encode_cert_info
+
     keyfile: Path = ctx.obj["keyfile"]
 
     try:
@@ -227,7 +240,14 @@ def provision(ctx: click.Context,
         click.echo(f"Invalid device U: {e}", err=True)
         sys.exit(1)
 
-    cert_info_bytes = cert_info.encode("utf-8")
+    issuer_did = f"did:web:{domain}"
+    try:
+        cert_info_bytes = encode_cert_info(
+            issuer_did, datetime.now(timezone.utc), max_age_hours
+        )
+    except ValueError as e:
+        click.echo(f"Invalid cert_info parameters: {e}", err=True)
+        sys.exit(1)
 
     try:
         cert = issuer_generate_cert(U, cert_info_bytes, keypair)
@@ -235,11 +255,16 @@ def provision(ctx: click.Context,
         click.echo(f"Cert issuance failed: {e}", err=True)
         sys.exit(1)
 
+    # Readable fields are decoded from the issued bytes, which are authoritative.
+    parsed = decode_cert_info(cert_info_bytes)
     result = {
         "R_compressed_hex": point_to_compressed(cert.R).hex(),
         "s_hex": number_to_string(cert.s, N).hex(),
-        "cert_info_utf8": cert_info,
         "cert_info_hex": cert_info_bytes.hex(),
+        "cert_info_issuer_id_hex": parsed.issuer_id.hex(),
+        "cert_info_issued_at": parsed.issued_at.isoformat(),
+        "cert_info_max_age_hours": parsed.max_age_seconds // 3600,
+        "issuer_did": issuer_did,
     }
 
     if output_json:
@@ -334,10 +359,11 @@ def list_revoked(registry_url: str) -> None:
     help="Human-readable label for this device.",
 )
 @click.option(
-    "--max-age",
-    default=31_536_000,
+    "--max-age-hours",
+    default=8760,
     show_default=True,
-    help="Certificate validity in seconds (default: 1 year).",
+    type=click.IntRange(1, 65535),
+    help="Certificate validity in whole hours (default: 1 year).",
 )
 @click.option(
     "--output-json",
@@ -349,7 +375,7 @@ def list_revoked(registry_url: str) -> None:
 def generate_device(ctx: click.Context,
                     domain: str,
                     device_name: str,
-                    max_age: int,
+                    max_age_hours: int,
                     output_json: Path) -> None:
     """Generate complete device credentials for simulation.
 
@@ -380,11 +406,12 @@ def generate_device(ctx: click.Context,
     # Step 1: device-side contribution
     contribution = device_generate_contribution()
 
-    # Step 2: build cert_info
+    # Step 2: build cert_info (10-byte binary, defined in src/cert_info.py)
+    from src.cert_info import decode_cert_info, encode_cert_info
     now = datetime.now(timezone.utc)
     issuer_did = f"did:web:{domain}"
-    cert_info_str = f"{issuer_did}||{now.isoformat()}||{max_age}"
-    cert_info_bytes = cert_info_str.encode("utf-8")
+    cert_info_bytes = encode_cert_info(issuer_did, now, max_age_hours)
+    parsed = decode_cert_info(cert_info_bytes)   # readable fields come from the bytes
 
     # Step 3: issuer signs the cert
     try:
@@ -402,8 +429,10 @@ def generate_device(ctx: click.Context,
         "d_hex": number_to_string(d, N).hex(),
         "R_compressed_hex": point_to_compressed(cert.R).hex(),
         "s_hex": number_to_string(cert.s, N).hex(),
-        "cert_info_utf8": cert_info_str,
         "cert_info_hex": cert_info_bytes.hex(),
+        "cert_info_issuer_id_hex": parsed.issuer_id.hex(),
+        "cert_info_issued_at": parsed.issued_at.isoformat(),
+        "cert_info_max_age_hours": parsed.max_age_seconds // 3600,
         "issuer_did": issuer_did,
         "simulation_note": (
             "SIMULATION ONLY: d is exported. "
@@ -418,8 +447,9 @@ def generate_device(ctx: click.Context,
     click.echo(f"  Device name:  {device_name}")
     click.echo(f"  Issuer DID:   {issuer_did}")
     click.echo(f"  d (private):  {result['d_hex'][:16]}... (KEEP SECRET)")
-    click.echo(f"  cert_info:    {cert_info_str}")
-    click.echo(f"  cert valid:   {max_age} seconds from now")
+    click.echo(f"  cert_info:    {cert_info_bytes.hex()} ({len(cert_info_bytes)} bytes)")
+    click.echo(f"  issued at:    {parsed.issued_at.isoformat()}")
+    click.echo(f"  cert valid:   {max_age_hours} hours from issue")
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +529,23 @@ def export_c(ctx: click.Context,
         click.echo(f"Failed to load gateway keystore: {e}", err=True)
         sys.exit(1)
 
+    from src.cert_info import decode_cert_info
+    try:
+        _ci_bytes = bytes.fromhex(cert_data["cert_info_hex"])
+        _ci = decode_cert_info(_ci_bytes)
+    except ValueError as e:
+        click.echo(
+            f"Device JSON has an old or malformed cert_info ({e}).\n"
+            f"Regenerate it with 'generate-device'.",
+            err=True,
+        )
+        sys.exit(1)
+    ci_desc = (
+        f"issuer_id={_ci.issuer_id.hex()} "
+        f"issued_at={_ci.issued_at.isoformat()} "
+        f"max_age={_ci.max_age_seconds // 3600}h ({len(_ci_bytes)} bytes)"
+    )
+
     gw_pubkey_hex = point_to_compressed(keystore.gateway_identity.public_key).hex()
     Q_ca_hex = point_to_compressed(issuer.Q_ca).hex()
     issuer_did = f"did:web:{domain}"
@@ -531,7 +578,7 @@ def export_c(ctx: click.Context,
         "#include <stdint.h>",
         "",
         f"/* Issuer DID: {issuer_did} */",
-        f"/* cert_info:  {cert_data['cert_info_utf8']} */",
+        f"/* cert_info:  {ci_desc} */",
         "",
         hex_to_c_array(cert_data["d_hex"], "DEVICE_PRIVATE_KEY"),
         hex_to_c_array(cert_data["R_compressed_hex"], "DEVICE_CERT_R"),

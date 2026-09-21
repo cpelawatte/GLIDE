@@ -153,7 +153,7 @@ def test_cli_provision_requires_keyfile(tmp_path: Path):
             "--keyfile", str(keyfile),
             "provision",
             "--device-U-hex", U_hex,
-            "--cert-info", "test-info",
+            "--domain", "test.example",
         ],
     )
     assert result.exit_code == 1
@@ -171,7 +171,7 @@ def test_cli_provision_rejects_invalid_U(tmp_path: Path):
             "--keyfile", str(keyfile),
             "provision",
             "--device-U-hex", "deadbeef",   # Not 33 bytes
-            "--cert-info", "test-info",
+            "--domain", "test.example",
         ],
     )
     assert result.exit_code == 1
@@ -202,15 +202,14 @@ def test_end_to_end_provisioning_flow(tmp_path: Path):
     contribution = device_generate_contribution()
     U_hex = point_to_compressed(contribution.U).hex()
 
-    # Step 3: device requests provisioning via CLI
-    cert_info_str = "did:web:test.example||2026-04-19T00:00:00Z||31536000"
+    # Step 3: device sends only U; the issuer builds cert_info itself
     provision_result = runner.invoke(
         cli,
         [
             "--keyfile", str(keyfile),
             "provision",
             "--device-U-hex", U_hex,
-            "--cert-info", cert_info_str,
+            "--domain", "test.example",
         ],
     )
     assert provision_result.exit_code == 0, provision_result.output
@@ -220,6 +219,10 @@ def test_end_to_end_provisioning_flow(tmp_path: Path):
     R = compressed_to_point(bytes.fromhex(cert_data["R_compressed_hex"]))
     s = string_to_number(bytes.fromhex(cert_data["s_hex"]))
     cert_info_bytes = bytes.fromhex(cert_data["cert_info_hex"])
+    # The issuer, not the requester, built cert_info: 10 bytes, its own issuer id
+    from src.cert_info import decode_cert_info, issuer_id_for
+    assert len(cert_info_bytes) == 10
+    assert decode_cert_info(cert_info_bytes).issuer_id == issuer_id_for("did:web:test.example")
 
     cert = ImplicitCertificate(R=R, s=s, cert_info=cert_info_bytes)
 
