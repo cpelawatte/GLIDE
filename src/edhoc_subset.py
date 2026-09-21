@@ -62,11 +62,11 @@ from src.ecqv_core import (
     ImplicitCertificate,
     point_to_compressed,
 )
+from src.cert_info import decode_cert_info, issuer_id_for
 from src.gateway_keystore import GatewayIdentity, Keystore
 from src.gateway_verifier import (
     AuthFailureReason,
     AuthResult,
-    parse_cert_info,
     verify_signature_under_reconstructed_key,
 )
 
@@ -317,7 +317,7 @@ def gateway_process_msg1_build_msg2(
 
     # --- Parse cert_info for freshness + issuer check ---
     try:
-        parsed = parse_cert_info(msg1.cert_info)
+        parsed = decode_cert_info(msg1.cert_info)
     except ValueError as e:
         return EdhocResult.fail(AuthFailureReason.CERT_INFO_MALFORMED, str(e))
 
@@ -328,10 +328,14 @@ def gateway_process_msg1_build_msg2(
     if now > parsed.expires_at:
         return EdhocResult.fail(AuthFailureReason.CERT_EXPIRED,
                                 f"now={now} > expires_at={parsed.expires_at}")
-    if parsed.issuer_did != keystore.pinned_issuer.issuer_did:
+    # 4-byte issuer_id check: early, clearly reported rejection only.
+    # Issuer authenticity comes from reconstructing Q_dev under pinned Q_ca.
+    expected_issuer_id = issuer_id_for(keystore.pinned_issuer.issuer_did)
+    if parsed.issuer_id != expected_issuer_id:
         return EdhocResult.fail(
             AuthFailureReason.ISSUER_MISMATCH,
-            f"cert issuer={parsed.issuer_did} != pinned={keystore.pinned_issuer.issuer_did}",
+            f"cert issuer_id={parsed.issuer_id.hex()} != pinned issuer_id="
+            f"{expected_issuer_id.hex()} ({keystore.pinned_issuer.issuer_did})",
         )
 
     # --- Verify device signature via reconstruction (reused from verifier) ---

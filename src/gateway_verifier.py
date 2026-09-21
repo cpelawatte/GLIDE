@@ -17,11 +17,12 @@ On any failure, returns AuthResult(success=False, reason=<enum>). On success,
 returns AuthResult(success=True, device_did=did:key(Q_dev)).
 
 Design notes:
-    - Signature bytes: nonce (16) || R_compressed (33) || cert_info (variable)
+    - Signature bytes: nonce (16) || R_compressed (33) || cert_info (10)
     - Signature scheme: standard ECDSA over P-256 with SHA-256, deterministic
       per RFC 6979 (see DESIGN_DECISIONS.md DD-002)
-    - cert_info format: "issuer_did||issued_at||max_age_seconds"
-      (pipe-delimited UTF-8; opaque to signature, parsed for freshness)
+    - cert_info format: 10-byte binary, defined in src/cert_info.py
+      (issuer_id 4 B || issued_at uint32 || max_age_hours uint16; opaque to
+      the signature, parsed for freshness and the issuer check)
     - Clock is injectable to allow deterministic testing
 """
 
@@ -42,6 +43,7 @@ from src.cbor_codec import (
     SIGNATURE_SIZE,
     encode_auth_challenge,
 )
+from src.cert_info import decode_cert_info, issuer_id_for
 from src.did_utils import encode_did_key
 from src.ecqv_core import (
     G,
@@ -156,67 +158,8 @@ def device_sign_authentication_challenge(d: int,
     return signature
 
 
-# ---------------------------------------------------------------------------
-# cert_info parsing
-# ---------------------------------------------------------------------------
+# cert_info parsing lives in src/cert_info.py (Fix 7: 10-byte binary format).
 
-@dataclass(frozen=True)
-class ParsedCertInfo:
-    issuer_did: str
-    issued_at: datetime
-    max_age_seconds: int
-
-    @property
-    def expires_at(self) -> datetime:
-        return self.issued_at + timedelta(seconds=self.max_age_seconds)
-
-
-def parse_cert_info(cert_info_bytes: bytes) -> ParsedCertInfo:
-    """Parse pipe-delimited cert_info.
-
-    Format: "issuer_did||issued_at_iso||max_age_seconds"
-    Example: "did:web:issuer.example||2026-04-19T00:00:00+00:00||31536000"
-
-    Raises ValueError on any parse failure.
-    """
-    try:
-        text = cert_info_bytes.decode("utf-8")
-    except UnicodeDecodeError as e:
-        raise ValueError(f"cert_info is not valid UTF-8: {e}") from e
-
-    parts = text.split("||")
-    if len(parts) != 3:
-        raise ValueError(
-            f"cert_info must have 3 pipe-delimited fields, got {len(parts)}: {text!r}"
-        )
-
-    issuer_did, issued_at_str, max_age_str = parts
-
-    if not issuer_did.startswith("did:"):
-        raise ValueError(f"issuer_did is not a DID: {issuer_did!r}")
-
-    try:
-        issued_at = datetime.fromisoformat(issued_at_str)
-    except ValueError as e:
-        raise ValueError(f"issued_at is not valid ISO 8601: {issued_at_str!r}") from e
-
-    # Ensure timezone-aware. If naive, assume UTC.
-    if issued_at.tzinfo is None:
-        issued_at = issued_at.replace(tzinfo=timezone.utc)
-
-    try:
-        max_age_seconds = int(max_age_str)
-    except ValueError as e:
-        raise ValueError(f"max_age is not an integer: {max_age_str!r}") from e
-
-    if max_age_seconds <= 0:
-        raise ValueError(f"max_age must be positive, got {max_age_seconds}")
-
-    return ParsedCertInfo(
-        issuer_did=issuer_did,
-        issued_at=issued_at,
-        max_age_seconds=max_age_seconds,
-    )
 # ---------------------------------------------------------------------------
 # Signature verification against a reconstructed ECQV public key
 #
@@ -320,7 +263,7 @@ def verify_authentication(
     """
     # --- Step 1: parse cert_info ---
     try:
-        parsed = parse_cert_info(auth_response.cert_info)
+        parsed = decode_cert_info(auth_response.cert_info)
     except ValueError as e:
         return AuthResult.fail(
             AuthFailureReason.CERT_INFO_MALFORMED,
@@ -341,11 +284,15 @@ def verify_authentication(
         )
 
     # --- Step 3: issuer identity check ---
-    # The cert_info claims a specific issuer DID; it must match the one we pinned.
-    if parsed.issuer_did != pinned_issuer.issuer_did:
+    # cert_info carries a 4-byte issuer_id; compare it with the id derived from
+    # the pinned issuer DID. This is an early, clearly reported rejection only:
+    # issuer authenticity itself comes from reconstructing Q_dev under pinned Q_ca.
+    expected_issuer_id = issuer_id_for(pinned_issuer.issuer_did)
+    if parsed.issuer_id != expected_issuer_id:
         return AuthResult.fail(
             AuthFailureReason.ISSUER_MISMATCH,
-            f"cert issuer={parsed.issuer_did!r} != pinned issuer={pinned_issuer.issuer_did!r}",
+            f"cert issuer_id={parsed.issuer_id.hex()} != pinned issuer_id="
+            f"{expected_issuer_id.hex()} ({pinned_issuer.issuer_did!r})",
         )
 
     # --- Steps 4-6: reconstruct Q_dev, verify signature, derive DID ---

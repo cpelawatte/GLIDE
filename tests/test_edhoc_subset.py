@@ -25,6 +25,7 @@ from src.cbor_codec import (
     encode_edhoc_msg1,
     encode_edhoc_msg2,
 )
+from src.cert_info import encode_cert_info
 from src.ecqv_core import (
     G,
     device_derive_private_key,
@@ -70,10 +71,10 @@ class MockFetcher:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-def _make_cert_info(issuer_did=ISSUER_DID, issued_at=None, max_age=31_536_000) -> bytes:
+def _make_cert_info(issuer_did=ISSUER_DID, issued_at=None, max_age_hours=8760) -> bytes:
     if issued_at is None:
         issued_at = datetime.now(timezone.utc)
-    return f"{issuer_did}||{issued_at.isoformat()}||{max_age}".encode()
+    return encode_cert_info(issuer_did, issued_at, max_age_hours)
 
 
 @pytest.fixture
@@ -212,7 +213,7 @@ def test_msg1_decode_failure_rejected(keystore):
 def test_expired_cert_rejected_in_msg1(keystore, issuer):
     contribution = device_generate_contribution()
     old = datetime(2020, 1, 1, tzinfo=timezone.utc)
-    cert_info = _make_cert_info(issued_at=old, max_age=3600)
+    cert_info = _make_cert_info(issued_at=old, max_age_hours=1)
     cert = issuer_generate_cert(contribution.U, cert_info, issuer)
     d = device_derive_private_key(contribution, cert)
     msg1_bytes, _ = device_build_msg1(d, cert.R, cert.cert_info, keystore.gateway_identity.public_key)
@@ -358,7 +359,7 @@ def test_msg1_signed_for_other_gateway_rejected(keystore, provisioned_device):
     """Cross-gateway relay: MSG_1 signed for gateway A must not verify at B.
 
     Countermeasure: Q_gw is bound into sigma_d. Corresponds to Tamarin
-    lemma Gateway_Authenticates_Device (verified, 18 steps).
+    lemma Gateway_Authenticates_Device (verified, 21 steps).
     """
     other_gateway = _generate_gateway_identity(lifetime_days=90)
 
