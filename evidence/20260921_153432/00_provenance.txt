@@ -1,0 +1,8 @@
+Captured:        2026-09-21T15:34:32+05:30
+Host:            Linux csp 7.0.0-30-generic #30~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Fri Aug  7 13:27:52 UTC 2 x86_64 x86_64 x86_64 GNU/Linux
+Git branch:      fix7-certinfo
+Git commit:      d16ed49abb8c58ea289c1e157a5ea0beeedfca39
+Git status:      0 uncommitted file(s) (evidence/ excluded)
+Python:          Python 3.12.3
+arm-none-eabi:   arm-none-eabi-gcc (15:13.2.rel1-2) 13.2.1 20231009
+Tamarin:          checking version: tamarin-prover 1.12.0, (C) David Basin, Cas Cremers, Jannik Dreier, Simon Meier, Ralf Sasse, Benedikt Schmidt, 2010-2023

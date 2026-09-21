@@ -1,0 +1,21 @@
+GLIDE evidence capture — 2026-09-21T15:37:23+05:30
+Commit: d16ed49  Branch: fix7-certinfo
+
+METRIC                             EXPECTED       CAPTURED
+------                             --------       --------
+cert_info                          10 B           10B
+credential                         43 B           43B
+MSG_1 / MSG_2                      174 / 126 B    MSG_1=174  MSG_2=126
+tests passing                      180            180 passed
+
+ROM = text column.  RAM = data + bss.
+-- full image (expected ROM 79,827 / RAM 16,117) --
+   text	   data	    bss	    dec	    hex	filename
+  79827	   2516	  13601	  95944	  176c8	build/cc2538dk/device_auth_main_footprint.cc2538dk
+-- protocol isolated (expected ROM 64,262 / RAM 9,963) --
+   text	   data	    bss	    dec	    hex	filename
+  64262	   2340	   7623	  74225	  121f1	build/cc2538dk/device_auth_main_footprint.cc2538dk
+
+-- Tamarin (expected 14/14 verified: baseline 10 + 4 KCI) --
+lemmas verified: 14
+lemmas falsified: 0
