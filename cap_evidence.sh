@@ -5,13 +5,17 @@
 # Run from ~/Desktop/FYP with the venv active.
 #
 #   cd ~/Desktop/FYP && source venv/bin/activate
-#   bash capture_evidence.sh
+#   bash cap_evidence.sh
 #
 # Produces ~/Desktop/FYP/evidence/<timestamp>/ containing one file per
 # measurement plus SUMMARY.txt. Safe to re-run live during the viva.
 #
-# Does NOT run scripts/baseline_comparison.py (fabricated output) or the
-# ROM/RAM/latency sections of scripts/measure_protocol.py (dead numbers).
+# Does NOT run scripts/baseline_comparison.py or scripts/measure_protocol.py:
+# both were deleted because they printed fabricated or dead numbers.
+#
+# EXPECTED values in this script are the GLIDE-Access set after Fix 7
+# (Sept 2026, branch fix7-certinfo). The frozen conference set is recorded in
+# the project context file and reproducible from tag icatc-submission.
 
 set -u
 FYP="$HOME/Desktop/FYP"
@@ -33,16 +37,16 @@ banner "0. Provenance"
   echo "Host:            $(uname -a)"
   echo "Git branch:      $(git rev-parse --abbrev-ref HEAD)"
   echo "Git commit:      $(git rev-parse HEAD)"
-  echo "Git status:      $(git status --porcelain | wc -l) uncommitted file(s)"
+  echo "Git status:      $(git status --porcelain -- . ':(exclude)evidence/' | wc -l) uncommitted file(s) (evidence/ excluded)"
   echo "Python:          $(python3 --version 2>&1)"
   echo "arm-none-eabi:   $(arm-none-eabi-gcc --version 2>&1 | head -1)"
-  echo "Tamarin:         $(tamarin-prover --version 2>&1 | head -1)"
+  echo "Tamarin:         $(tamarin-prover --version 2>&1 | grep -m1 -i 'tamarin')"
 } | tee "$OUT/00_provenance.txt"
 
 # ---------------------------------------------------------------- 1. credential
-# Expected: cert_info = 66 B, credential = 99 B
-# Uses the BENCHMARK config (did:web:issuer.example), NOT contiki/credentials.h
-# which uses did:web:127.0.0.1%3A5000 and gives 68 B.
+# Expected: cert_info = 10 B, credential = 43 B (Fix 7).
+# cert_info is fixed-width since Fix 7, so the issuer DID length no longer
+# changes it: the old 66 B (benchmark) vs 68 B (local demo) split is gone.
 banner "1. Credential size (benchmark config)"
 python3 -c "
 import sys; sys.path.insert(0, '.')
@@ -53,25 +57,25 @@ print(f'credential = R(33) + cert_info({len(ci)}) = {33+len(ci)}B')
 " 2>&1 | tee "$OUT/01_credential_size.txt"
 
 # ---------------------------------------------------------------- 2. wire sizes
-# Expected: MSG_1=231  MSG_2=126  (total 357)
+# Expected: MSG_1=174  MSG_2=126  (total 300)
 banner "2. Handshake wire sizes"
 python -m pytest tests/test_edhoc_subset.py::test_e2e_handshake_happy_path -s 2>&1 \
   | grep -E "SIZES|passed|failed" | tee "$OUT/02_wire_sizes.txt"
 
 # ---------------------------------------------------------------- 3. test suite
-# Expected: 166 passed
+# Expected: 180 passed
 banner "3. Full test suite"
 python -m pytest -q 2>&1 | tail -20 | tee "$OUT/03_test_suite.txt"
 
 banner "3b. Rejection-case count"
-# Expected: 72
+# Expected: 70 (grep heuristic on test names: sanity check only, not a paper number)
 python -m pytest -q --collect-only 2>&1 | grep -ciE "reject|invalid|expired|revoked|mismatch|malformed" \
   | tee "$OUT/03b_rejection_cases.txt"
 
 # ---------------------------------------------------------------- 4. ROM / RAM
 # ROM = text.  RAM = data + bss.
-# Expected full image:      text 79,952   data+bss 16,117
-# Expected protocol-only:   text 64,387   data+bss  9,963
+# Expected full image:      text 79,827   data+bss 16,117
+# Expected protocol-only:   text 64,262   data+bss  9,963
 # NOTE: target is device_auth_main_footprint, NOT device_auth_main.
 banner "4a. Footprint — full image (IPv6 + RPL)"
 cd "$FYP/contiki" || exit 1
@@ -92,18 +96,20 @@ arm-none-eabi-size build/cc2538dk/device_auth_main_footprint.cc2538dk \
 cd "$FYP" || exit 1
 
 # ---------------------------------------------------------------- 5. Tamarin
-# Expected: 10 lemmas, all verified, identical step counts under both engines.
+# Model: Fix 5 = frozen baseline + 4 KCI lemmas (deployed GLIDE, distinct keys).
+# Expected: 14 lemmas, all verified. The Fix 1 shared-key model is deliberately
+# NOT run here (misconfiguration model; evidence in evidence/fix1_sharedkey/).
 banner "5a. Tamarin under Maude 3.5.1"
 { time tamarin-prover --prove --derivcheck-timeout=600 \
     --with-maude="$MAUDE351" \
-    paper/sections/tamarin_model_pfs.spthy ; } > "$OUT/05a_tamarin_maude351.txt" 2>&1
+    paper/sections/tamarin_model_fix5_kci.spthy ; } > "$OUT/05a_tamarin_maude351.txt" 2>&1
 grep -E "verified|falsified|steps|^ *analyzed" "$OUT/05a_tamarin_maude351.txt" | tail -25
 
 if [ -x "$MAUDE32" ]; then
   banner "5b. Tamarin under Maude 3.2 (cross-engine check)"
   { time tamarin-prover --prove --derivcheck-timeout=600 \
       --with-maude="$MAUDE32" \
-      paper/sections/tamarin_model_pfs.spthy ; } > "$OUT/05b_tamarin_maude32.txt" 2>&1
+      paper/sections/tamarin_model_fix5_kci.spthy ; } > "$OUT/05b_tamarin_maude32.txt" 2>&1
   grep -E "verified|falsified|steps|^ *analyzed" "$OUT/05b_tamarin_maude32.txt" | tail -25
 
   banner "5c. Engine agreement"
@@ -117,25 +123,25 @@ else
 fi
 
 # ---------------------------------------------------------------- 6. summary
-banner "6. Summary vs locked values"
+banner "6. Summary vs expected (GLIDE-Access set, post-Fix 7)"
 {
   echo "GLIDE evidence capture — $(date -Iseconds)"
   echo "Commit: $(git rev-parse --short HEAD)  Branch: $(git rev-parse --abbrev-ref HEAD)"
   echo
   printf "%-34s %-14s %s\n" "METRIC" "EXPECTED" "CAPTURED"
   printf "%-34s %-14s %s\n" "------" "--------" "--------"
-  printf "%-34s %-14s %s\n" "cert_info" "66 B" "$(grep -oE '[0-9]+B' "$OUT/01_credential_size.txt" | head -1)"
-  printf "%-34s %-14s %s\n" "credential" "99 B" "$(grep -oE '= [0-9]+B' "$OUT/01_credential_size.txt" | tail -1 | tr -d '= ')"
-  printf "%-34s %-14s %s\n" "MSG_1 / MSG_2" "231 / 126 B" "$(grep -oE 'MSG_1=[0-9]+ +MSG_2=[0-9]+' "$OUT/02_wire_sizes.txt" | head -1)"
-  printf "%-34s %-14s %s\n" "tests passing" "166" "$(grep -oE '[0-9]+ passed' "$OUT/03_test_suite.txt" | head -1)"
+  printf "%-34s %-14s %s\n" "cert_info" "10 B" "$(grep -oE '[0-9]+B' "$OUT/01_credential_size.txt" | head -1)"
+  printf "%-34s %-14s %s\n" "credential" "43 B" "$(grep -oE '= [0-9]+B' "$OUT/01_credential_size.txt" | tail -1 | tr -d '= ')"
+  printf "%-34s %-14s %s\n" "MSG_1 / MSG_2" "174 / 126 B" "$(grep -oE 'MSG_1=[0-9]+ +MSG_2=[0-9]+' "$OUT/02_wire_sizes.txt" | head -1)"
+  printf "%-34s %-14s %s\n" "tests passing" "180" "$(grep -oE '[0-9]+ passed' "$OUT/03_test_suite.txt" | head -1)"
   echo
   echo "ROM = text column.  RAM = data + bss."
-  echo "-- full image (expected ROM 79,952 / RAM 16,117) --"
+  echo "-- full image (expected ROM 79,827 / RAM 16,117) --"
   cat "$OUT/04a_footprint_full.txt"
-  echo "-- protocol isolated (expected ROM 64,387 / RAM 9,963) --"
+  echo "-- protocol isolated (expected ROM 64,262 / RAM 9,963) --"
   cat "$OUT/04b_footprint_isolated.txt"
   echo
-  echo "-- Tamarin (expected 10/10 verified) --"
+  echo "-- Tamarin (expected 14/14 verified: baseline 10 + 4 KCI) --"
   grep -cE ": verified" "$OUT/05a_tamarin_maude351.txt" | sed 's/^/lemmas verified: /'
   grep -cE ": falsified" "$OUT/05a_tamarin_maude351.txt" | sed 's/^/lemmas falsified: /'
 } | tee "$OUT/SUMMARY.txt"
