@@ -1,0 +1,10 @@
+maude tool: '/home/csp/Downloads/Maude-3.5.1-linux-x86_64/maude'
+ checking version: 3.5.1. OK.
+ checking installation: OK.
+[Theory LECQV_DID_Auth] Theory loaded
+[Theory LECQV_DID_Auth] Theory translated
+[Theory LECQV_DID_Auth] Derivation checks started
+[Theory LECQV_DID_Auth] Derivation checks ended
+[Theory LECQV_DID_Auth] Theory closed
+[Saturating Sources] Step 1 (Max 5)
+[Saturating Sources] Done
