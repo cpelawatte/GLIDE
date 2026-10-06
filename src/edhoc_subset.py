@@ -1,19 +1,29 @@
 """
-EDHOC subset: two-message mutual authentication and session key establishment.
+EDHOC subset: mutual authentication and session key establishment using two
+unicast messages per authentication (MSG_1, MSG_2), with freshness supplied by
+an amortised epoch-beacon broadcast from the gateway (src/beacon.py, Fix 2).
 
 Restricted subset of RFC 9528 (see docs/DESIGN_DECISIONS.md DD-003):
     - Method: 0 (signature-based on both sides)
     - Cipher Suite: 2 (P-256 / AES-CCM-16-64-128 / SHA-256)
-    - Messages: MSG_1 + MSG_2 only (no MSG_3, no explicit key confirmation)
+    - Unicast messages: MSG_1 + MSG_2 only (no MSG_3, no explicit key
+      confirmation). Freshness comes from the epoch beacon, not a third flight.
     - Credential: ECQV implicit certificate (device), raw ECDSA pubkey (gateway)
 
 Protocol flow:
+    0. Gateway broadcasts a beacon B = epoch (4 B) || value (16 B) once per
+       epoch. B is public and unsigned; the device keeps the latest one heard.
     1. Device generates ephemeral keypair (e_d, E_d)
-    2. Device signs (E_d || R || cert_info || nonce_d || Q_gw) with its
-       long-term key d, where Q_gw is the pre-provisioned gateway public key
+    2. Device signs (E_d || R || cert_info || nonce_d || Q_gw || B) with its
+       long-term key d, where Q_gw is the pre-provisioned gateway public key.
+       Neither Q_gw nor B is transmitted in MSG_1 (zero wire bytes).
     3. Device sends MSG_1 = {E_d, R, cert_info, nonce_d, signature_d}
-    4. Gateway verifies device via ECQV reconstruction + signature check (reuses
-       gateway_verifier.verify_signature_under_reconstructed_key).
+    4. Gateway rejects (R, nonce_d) if already accepted this epoch, verifies
+       the device via ECQV reconstruction + signature check against ITS OWN
+       current beacon (reuses
+       gateway_verifier.verify_signature_under_reconstructed_key), checks
+       revocation, and only then records (R, nonce_d) on the epoch's nonce
+       sheet (at most 2 accepted per device per epoch).
     5. Gateway generates ephemeral keypair (e_g, E_g)
     6. Gateway signs (MSG_1_bytes || E_g || nonce_g) with its long-term key
     7. Gateway sends MSG_2 = {E_g, nonce_g, signature_g}
@@ -62,6 +72,7 @@ from src.ecqv_core import (
     ImplicitCertificate,
     point_to_compressed,
 )
+from src.beacon import Beacon, EpochState, RecordResult
 from src.cert_info import decode_cert_info, issuer_id_for
 from src.gateway_keystore import GatewayIdentity, Keystore
 from src.gateway_verifier import (
@@ -73,6 +84,26 @@ from src.gateway_verifier import (
 
 SESSION_KEY_LENGTH = 16   # AES-128
 HKDF_INFO = b"edhoc-subset-v1-session-key"
+
+# Fix 2: how a refused nonce-sheet write is reported. EPOCH_ENDED surfaces as
+# SIGNATURE_INVALID: the device signed over a beacon that is no longer ours,
+# which the gateway cannot tell apart from any other bad signature.
+_RECORD_FAILURES = {
+    RecordResult.REPLAY: (
+        AuthFailureReason.REPLAY_DETECTED,
+        "nonce_d already accepted this epoch (concurrent duplicate)"),
+    RecordResult.DEVICE_CAP_REACHED: (
+        AuthFailureReason.DEVICE_RATE_LIMITED,
+        "per-device cap reached for this epoch"),
+    RecordResult.SHEET_FULL: (
+        AuthFailureReason.NONCE_SHEET_FULL,
+        "nonce sheet full; failing closed until the next epoch"),
+    RecordResult.EPOCH_ENDED: (
+        AuthFailureReason.SIGNATURE_INVALID,
+        "epoch ended during verification (stale beacon)"),
+}
+if set(_RECORD_FAILURES) != set(RecordResult) - {RecordResult.RECORDED}:
+    raise RuntimeError("_RECORD_FAILURES must cover every refused RecordResult")
 
 
 # ---------------------------------------------------------------------------
@@ -168,32 +199,38 @@ def derive_session_key(
 # Signature payload construction (centralized)
 # ---------------------------------------------------------------------------
 
-#def _msg1_signing_bytes(
-#    E_d: PointJacobi,
-#    R: PointJacobi,
-#    cert_info: bytes,
-#    nonce_d: bytes,
-#) -> bytes:
-#    """Bytes the device signs in MSG_1."""
-#    return point_to_compressed(E_d) + point_to_compressed(R) + cert_info + nonce_d
-
 def _msg1_signing_bytes(
     E_d: PointJacobi,
     R: PointJacobi,
     cert_info: bytes,
     nonce_d: bytes,
     Q_gw: PointJacobi,
+    beacon: Beacon,
 ) -> bytes:
-    """Bytes the device signs in MSG_1.
+    """Bytes the device signs in MSG_1:
+
+        E_d || R || cert_info || nonce_d || Q_gw || beacon
 
     Q_gw is the pre-provisioned gateway long-term public key. Binding it
     into the signature ties the message to the intended gateway, so a
     captured MSG_1 is rejected by any other gateway pinning the same
-    issuer. Q_gw is held by both parties from provisioning and is NOT
-    transmitted, so this costs zero wire bytes.
+    issuer (relay fix).
+
+    beacon is the gateway's epoch beacon (Fix 2): 4-byte epoch counter +
+    16-byte random value. Binding it ties the message to one epoch, so a
+    recorded MSG_1 stops verifying once the epoch rolls (replay) and cannot
+    be prepared before the epoch starts (pre-play). On the gateway side the
+    caller MUST pass ITS OWN current beacon, never a value from the message.
+
+    Neither Q_gw nor beacon is transmitted in MSG_1: zero wire bytes.
+    The beacon is last, as `br` is last in the Tamarin signed payload
+    (paper/sections/tamarin_model_fix2_beacon.spthy).
     """
+    if not isinstance(beacon, Beacon):
+        raise TypeError(f"beacon must be a Beacon, got {type(beacon).__name__}")
     return (point_to_compressed(E_d) + point_to_compressed(R)
-            + cert_info + nonce_d + point_to_compressed(Q_gw))
+            + cert_info + nonce_d + point_to_compressed(Q_gw)
+            + beacon.to_bytes())
 
 
 def _msg2_signing_bytes(
@@ -214,8 +251,13 @@ def device_build_msg1(
     R: PointJacobi,
     cert_info: bytes,
     gateway_public_key: PointJacobi,
+    beacon: Beacon,
 ) -> tuple[bytes, EdhocInitiatorState]:
     """Device builds MSG_1. Returns (msg1_bytes, state_to_retain).
+
+    `beacon` is the latest beacon the device heard. The device cannot check
+    it (beacons are unsigned); a stale or fake beacon only makes the gateway
+    reject this attempt, it can never make the gateway accept.
 
     The state contains the device's ephemeral private key and is needed
     when processing MSG_2 to derive the session key. The device MUST NOT
@@ -229,8 +271,9 @@ def device_build_msg1(
     E_d = e_d * G
     nonce_d = secrets.token_bytes(NONCE_SIZE)
 
-    # Sign (E_d || R || cert_info || nonce_d) with long-term key d
-    signing_bytes = _msg1_signing_bytes(E_d, R, cert_info, nonce_d, gateway_public_key)
+    # Sign (E_d || R || cert_info || nonce_d || Q_gw || beacon) with long-term key d
+    signing_bytes = _msg1_signing_bytes(E_d, R, cert_info, nonce_d,
+                                        gateway_public_key, beacon)
     signing_key = SigningKey.from_secret_exponent(d, curve=NIST256p)
     signature = signing_key.sign_deterministic(
         signing_bytes,
@@ -296,6 +339,8 @@ def gateway_process_msg1_build_msg2(
     msg1_bytes: bytes,
     revocation_manager=None,   # optional; if None, revocation not checked
     now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    *,
+    epoch_state: EpochState,
 ) -> EdhocResult:
     """Gateway verifies MSG_1, generates its own ephemeral keypair,
     builds MSG_2, and derives the session key.
@@ -307,8 +352,27 @@ def gateway_process_msg1_build_msg2(
     against the revocation list (returns REVOCATION_UNAVAILABLE or
     DEVICE_REVOKED per threat model G5).
 
+    epoch_state (required, keyword-only; Fix 2) is the gateway's long-lived
+    EpochState. Create ONE per gateway and pass the same object to every
+    call: a fresh EpochState per call throws the nonce sheet away and
+    silently disables replay detection within an epoch. There is no default
+    on purpose: forgetting it must fail loudly, not run without replay
+    protection.
+
+    Check order (cheap before expensive; nothing written until all pass):
+        snapshot beacon -> decode -> cert_info / validity / issuer_id
+        -> nonce-sheet lookup (read-only) -> signature against OUR beacon
+        -> revocation -> record (cap 2 per device per epoch, fail closed)
+        -> ephemeral key, MSG_2, session key.
+
     Returns EdhocResult with session_key, device_did, msg2_bytes on success.
     """
+    if not isinstance(epoch_state, EpochState):
+        raise TypeError("epoch_state must be the gateway's EpochState (Fix 2)")
+    # Snapshot ONE beacon for the whole call. If the epoch rolls before we
+    # record, record() returns EPOCH_ENDED and nothing is accepted.
+    beacon = epoch_state.current_beacon()
+
     try:
         msg1 = decode_edhoc_msg1(msg1_bytes)
     except ValueError as e:
@@ -338,8 +402,23 @@ def gateway_process_msg1_build_msg2(
             f"{expected_issuer_id.hex()} ({keystore.pinned_issuer.issuer_did})",
         )
 
+    # --- Replay lookup (Fix 2): READ-ONLY, safe on unauthenticated input ---
+    # A cheap dictionary lookup before the expensive signature check. The
+    # only write is record() below, after every check has passed.
+    device_key = point_to_compressed(msg1.R)
+    if epoch_state.is_replay(device_key, msg1.nonce_d):
+        return EdhocResult.fail(
+            AuthFailureReason.REPLAY_DETECTED,
+            f"nonce_d already accepted for this device in epoch {beacon.epoch}",
+        )
+
     # --- Verify device signature via reconstruction (reused from verifier) ---
-    signing_bytes = _msg1_signing_bytes(msg1.E_d, msg1.R, msg1.cert_info, msg1.nonce_d, keystore.gateway_identity.public_key,)
+    # Verified against OUR snapshot beacon, never anything in the message:
+    # a stale or fake beacon on the device side fails here.
+    signing_bytes = _msg1_signing_bytes(
+        msg1.E_d, msg1.R, msg1.cert_info, msg1.nonce_d,
+        keystore.gateway_identity.public_key, beacon,
+    )
     auth_result = verify_signature_under_reconstructed_key(
         pinned_issuer=keystore.pinned_issuer,
         R=msg1.R,
@@ -366,6 +445,14 @@ def gateway_process_msg1_build_msg2(
                 AuthFailureReason.REVOCATION_UNAVAILABLE,
                 "gateway is OFFLINE",
             )
+
+    # --- Record (Fix 2): the ONLY write. Cap and fail-closed live here. ---
+    # After revocation, so a revoked device never uses up its cap; before
+    # MSG_2, so a refused device never costs a gateway signature.
+    recorded = epoch_state.record(beacon, device_key, msg1.nonce_d)
+    if recorded is not RecordResult.RECORDED:
+        reason, detail = _RECORD_FAILURES[recorded]
+        return EdhocResult.fail(reason, detail)
 
     # --- Generate gateway ephemeral keypair, sign MSG_2, derive session key ---
     e_g = secrets.randbelow(N - 1) + 1

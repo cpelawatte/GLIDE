@@ -39,7 +39,8 @@ from src.ecqv_core import (
 # Protocol version
 # ---------------------------------------------------------------------------
 
-PROTOCOL_VERSION = 1   # Bumped when wire format changes incompatibly
+PROTOCOL_VERSION = 2   # Bumped when wire format or signed content changes incompatibly.
+                       # v2 (Fix 2): the MSG_1 signature also covers the epoch beacon.
 
 
 # ---------------------------------------------------------------------------
@@ -66,9 +67,9 @@ KEY_CERT_INFO  = 3      # Certificate metadata (raw bytes)
 KEY_R          = 4      # Reconstruction point (compressed bytes)
 KEY_S          = 5      # Issuer scalar (32 bytes)
 KEY_NONCE      = 6      # Fresh challenge nonce (16 bytes)
-KEY_SIGNATURE  = 7 
+KEY_SIGNATURE  = 7     # ECDSA signature (64 bytes: r || s concatenated)
 KEY_EPHEMERAL  = 8     # Ephemeral public key (compressed point, 33 bytes)
-KEY_NONCE_D    = 9     # Device nonce in EDHOC MSG_1 (distinct from gateway nonce)     # ECDSA signature (64 bytes: r || s concatenated)
+KEY_NONCE_D    = 9     # Device nonce in EDHOC MSG_1 (distinct from gateway nonce)
 KEY_NONCE_G    = 10    # Gateway's nonce in EDHOC (16 bytes)
 
 # ---------------------------------------------------------------------------

@@ -69,6 +69,9 @@ class AuthFailureReason(Enum):
     SIGNATURE_INVALID        = "signature_invalid"
     DEVICE_REVOKED           = "device_revoked"           # Day 11
     REVOCATION_UNAVAILABLE   = "revocation_unavailable"   # Day 11
+    REPLAY_DETECTED          = "replay_detected"          # Fix 2
+    DEVICE_RATE_LIMITED      = "device_rate_limited"      # Fix 2: cap per device per epoch
+    NONCE_SHEET_FULL         = "nonce_sheet_full"         # Fix 2: fail closed
 
 
 @dataclass(frozen=True)
