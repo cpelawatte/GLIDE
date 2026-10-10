@@ -39,3 +39,6 @@ contiki/build/
 *.CURRENT
 *.spthy.prefix
 tests/failing_test.py
+
+# Generated firmware credentials: contains the device private key
+contiki/credentials.h

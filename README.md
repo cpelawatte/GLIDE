@@ -52,7 +52,7 @@ checked out separately, and `arm-none-eabi-gcc` (13.2.1 used in development).
 
 **Issuer and identifier registry**
 ```bash
-python -m src.issuer_cli init --domain 127.0.0.1:5000 --force
+python -m src.issuer_cli init --domain 127.0.0.1%3A5000 --force
 python -m src.did_registry
 ```
 
