@@ -24,6 +24,9 @@ Protocol flow:
        gateway_verifier.verify_signature_under_reconstructed_key), checks
        revocation, and only then records (R, nonce_d) on the epoch's nonce
        sheet (at most 2 accepted per device per epoch).
+       A byte-identical MSG_1 later in the same epoch (the device lost
+       MSG_2) gets the stored MSG_2 again, at most 4 times; it causes no
+       new acceptance, signature or session key (decision 6, T2).
     5. Gateway generates ephemeral keypair (e_g, E_g)
     6. Gateway signs (MSG_1_bytes || E_g || nonce_g) with its long-term key
     7. Gateway sends MSG_2 = {E_g, nonce_g, signature_g}
@@ -138,6 +141,16 @@ class EdhocResult:
     @classmethod
     def fail(cls, reason: AuthFailureReason, detail: str = "") -> "EdhocResult":
         return cls(success=False, reason=reason, detail=detail)
+
+    @classmethod
+    def retransmission(cls, msg2_bytes: bytes,
+                       device_did: Optional[str] = None) -> "EdhocResult":
+        """T2: send `msg2_bytes` again. NOT an acceptance (success is False),
+        so a caller that counts or logs successes never counts it twice.
+        The caller must still transmit msg2_bytes."""
+        return cls(success=False, device_did=device_did, msg2_bytes=msg2_bytes,
+                   reason=AuthFailureReason.RETRANSMISSION,
+                   detail="byte-identical MSG_1: stored MSG_2 resent, no new acceptance")
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +347,24 @@ def device_process_msg2(
 # Gateway side
 # ---------------------------------------------------------------------------
 
+def _revocation_refusal(revocation_manager, device_did) -> Optional[EdhocResult]:
+    """The failure to return if the device is revoked or revocation is
+    unavailable (fail closed), else None."""
+    from src.revocation_sync import RevocationCheck
+    check = revocation_manager.check_revocation(device_did)
+    if check is RevocationCheck.REVOKED:
+        return EdhocResult.fail(
+            AuthFailureReason.DEVICE_REVOKED,
+            f"device_did={device_did} is revoked",
+        )
+    if check is RevocationCheck.UNAVAILABLE:
+        return EdhocResult.fail(
+            AuthFailureReason.REVOCATION_UNAVAILABLE,
+            "gateway is OFFLINE",
+        )
+    return None
+
+
 def gateway_process_msg1_build_msg2(
     keystore: Keystore,
     msg1_bytes: bytes,
@@ -363,9 +394,16 @@ def gateway_process_msg1_build_msg2(
         snapshot beacon -> decode -> cert_info / validity / issuer_id
         -> nonce-sheet lookup (read-only) -> signature against OUR beacon
         -> revocation -> record (cap 2 per device per epoch, fail closed)
-        -> ephemeral key, MSG_2, session key.
+        -> ephemeral key, MSG_2, session key -> store MSG_2 for resends.
+
+    If the lookup finds the nonce already accepted: a byte-identical MSG_1
+    (same SHA-256) whose stored MSG_2 has been resent fewer than 4 times
+    gets EdhocResult.retransmission(stored MSG_2), after a revocation
+    re-check; anything else is REPLAY_DETECTED. Neither path verifies a
+    signature, writes a sheet entry, signs, or derives a key.
 
     Returns EdhocResult with session_key, device_did, msg2_bytes on success.
+    On a retransmission, success is False and msg2_bytes must still be sent.
     """
     if not isinstance(epoch_state, EpochState):
         raise TypeError("epoch_state must be the gateway's EpochState (Fix 2)")
@@ -406,11 +444,21 @@ def gateway_process_msg1_build_msg2(
     # A cheap dictionary lookup before the expensive signature check. The
     # only write is record() below, after every check has passed.
     device_key = point_to_compressed(msg1.R)
+    msg1_digest = hashlib.sha256(msg1_bytes).digest()
     if epoch_state.is_replay(device_key, msg1.nonce_d):
-        return EdhocResult.fail(
-            AuthFailureReason.REPLAY_DETECTED,
-            f"nonce_d already accepted for this device in epoch {beacon.epoch}",
-        )
+        # T2: only a byte-identical MSG_1 gets the stored MSG_2 again, and
+        # only up to 4 times. Any other reuse of the nonce is a replay.
+        stored = epoch_state.resend(beacon, device_key, msg1.nonce_d, msg1_digest)
+        if stored is None:
+            return EdhocResult.fail(
+                AuthFailureReason.REPLAY_DETECTED,
+                f"nonce_d already accepted for this device in epoch {beacon.epoch}",
+            )
+        if revocation_manager is not None:
+            refusal = _revocation_refusal(revocation_manager, stored.device_did)
+            if refusal is not None:
+                return refusal
+        return EdhocResult.retransmission(stored.reply, stored.device_did)
 
     # --- Verify device signature via reconstruction (reused from verifier) ---
     # Verified against OUR snapshot beacon, never anything in the message:
@@ -433,23 +481,14 @@ def gateway_process_msg1_build_msg2(
 
     # --- Optional revocation check ---
     if revocation_manager is not None:
-        from src.revocation_sync import RevocationCheck
-        check = revocation_manager.check_revocation(device_did)
-        if check is RevocationCheck.REVOKED:
-            return EdhocResult.fail(
-                AuthFailureReason.DEVICE_REVOKED,
-                f"device_did={device_did} is revoked",
-            )
-        if check is RevocationCheck.UNAVAILABLE:
-            return EdhocResult.fail(
-                AuthFailureReason.REVOCATION_UNAVAILABLE,
-                "gateway is OFFLINE",
-            )
+        refusal = _revocation_refusal(revocation_manager, device_did)
+        if refusal is not None:
+            return refusal
 
     # --- Record (Fix 2): the ONLY write. Cap and fail-closed live here. ---
     # After revocation, so a revoked device never uses up its cap; before
     # MSG_2, so a refused device never costs a gateway signature.
-    recorded = epoch_state.record(beacon, device_key, msg1.nonce_d)
+    recorded = epoch_state.record(beacon, device_key, msg1.nonce_d, msg1_digest)
     if recorded is not RecordResult.RECORDED:
         reason, detail = _RECORD_FAILURES[recorded]
         return EdhocResult.fail(reason, detail)
@@ -470,6 +509,9 @@ def gateway_process_msg1_build_msg2(
     )
 
     msg2_bytes = encode_edhoc_msg2(E_g, nonce_g, signature_g)
+    # T2: keep it for byte-identical MSG_1 resends. If the epoch ended in the
+    # meantime nothing is stored and this MSG_2 simply cannot be resent.
+    epoch_state.store_reply(beacon, device_key, msg1.nonce_d, msg2_bytes, device_did)
 
     # Derive session key: my ephemeral private (e_g) + their ephemeral public (E_d)
     session_key = derive_session_key(e_g, msg1.E_d, msg1_bytes, msg2_bytes)

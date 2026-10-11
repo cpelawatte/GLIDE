@@ -72,6 +72,7 @@ class AuthFailureReason(Enum):
     REPLAY_DETECTED          = "replay_detected"          # Fix 2
     DEVICE_RATE_LIMITED      = "device_rate_limited"      # Fix 2: cap per device per epoch
     NONCE_SHEET_FULL         = "nonce_sheet_full"         # Fix 2: fail closed
+    RETRANSMISSION           = "retransmission"           # Fix 2 / T2: stored MSG_2 resent, no new acceptance
 
 
 @dataclass(frozen=True)

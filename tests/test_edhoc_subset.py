@@ -13,6 +13,8 @@ Covers:
       offline fails closed)
     - Fix 2 epoch-beacon freshness: replay, rollover, stale and fake beacon,
       per-device cap, fail-closed sheet, nothing written on failure
+    - Fix 2 / T2 resend: byte-identical MSG_1 gets the stored MSG_2 (no new
+      acceptance), any other nonce reuse is a replay, at most 4 resends
 """
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -30,6 +32,7 @@ from src.cbor_codec import (
 from src.cert_info import encode_cert_info
 from src.ecqv_core import (
     G,
+    N,
     device_derive_private_key,
     device_generate_contribution,
     issuer_generate_cert,
@@ -443,12 +446,99 @@ def test_signing_bytes_end_with_beacon(keystore, provisioned_device, epoch_state
     assert len(sb) == 33 + 33 + len(cert.cert_info) + NONCE_SIZE + 33 + 20
 
 
-def test_same_epoch_replay_rejected(keystore, provisioned_device, epoch_state):
+def test_identical_msg1_gets_the_stored_msg2_and_no_new_acceptance(
+        keystore, provisioned_device, epoch_state):
+    """T2: the device lost MSG_2 and sends the same MSG_1 bytes again."""
+    d = provisioned_device
+    m, dev_state = device_build_msg1(d["d"], d["cert"].R, d["cert"].cert_info,
+                                     keystore.gateway_identity.public_key,
+                                     epoch_state.current_beacon())
+    first = _gw(keystore, m, epoch_state)
+    assert first.success
+    again = _gw(keystore, m, epoch_state)
+    assert again.success is False                     # never a second acceptance
+    assert again.reason == AuthFailureReason.RETRANSMISSION
+    assert again.msg2_bytes == first.msg2_bytes       # same bytes, not re-signed
+    assert again.session_key is None
+    assert epoch_state.occupancy == 1                 # no new sheet entry
+    # the device gets the SAME session key the gateway derived the first time
+    dev = device_process_msg2(dev_state, keystore.gateway_identity.public_key,
+                              again.msg2_bytes)
+    assert dev.success and dev.session_key == first.session_key
+    print(f"\n[SIZES] MSG_1={len(m)} B, stored MSG_2={len(first.msg2_bytes)} B")
+
+
+def test_fifth_identical_msg1_is_a_replay(keystore, provisioned_device, epoch_state):
     m = _msg1(provisioned_device, keystore, epoch_state.current_beacon())
     assert _gw(keystore, m, epoch_state).success
-    again = _gw(keystore, m, epoch_state)
-    assert again.success is False
-    assert again.reason == AuthFailureReason.REPLAY_DETECTED
+    for _ in range(4):
+        assert _gw(keystore, m, epoch_state).reason == AuthFailureReason.RETRANSMISSION
+    fifth = _gw(keystore, m, epoch_state)
+    assert fifth.reason == AuthFailureReason.REPLAY_DETECTED
+    assert fifth.msg2_bytes is None
+
+
+def test_valid_but_different_msg1_with_same_nonce_is_a_replay(
+        keystore, provisioned_device, epoch_state):
+    """ECDSA malleability: (r, n - s) is a second VALID signature over the same
+    bytes. Its MSG_1 differs, so it gets no resend; the nonce makes it a replay."""
+    beacon = epoch_state.current_beacon()
+    m = _msg1(provisioned_device, keystore, beacon)
+    msg1 = decode_edhoc_msg1(m)
+    r, s = msg1.signature[:32], int.from_bytes(msg1.signature[32:], "big")
+    twin = encode_edhoc_msg1(msg1.E_d, msg1.R, msg1.cert_info, msg1.nonce_d,
+                             r + (N - s).to_bytes(32, "big"))
+    assert twin != m
+    # proof the twin is genuinely valid: a gateway that never saw m accepts it
+    same_beacon = EpochState(EPOCH_LENGTH_S, max_devices=8, clock=_FakeMonotonic(),
+                             value_source=lambda n: beacon.value,
+                             first_epoch=beacon.epoch)
+    assert _gw(keystore, twin, same_beacon).success
+    # on the real gateway m was accepted first, so the twin is a replay
+    assert _gw(keystore, m, epoch_state).success
+    r2 = _gw(keystore, twin, epoch_state)
+    assert r2.reason == AuthFailureReason.REPLAY_DETECTED
+    assert r2.msg2_bytes is None
+    assert epoch_state.occupancy == 1
+
+
+def test_resend_does_not_verify_sign_or_derive(keystore, provisioned_device,
+                                               epoch_state, monkeypatch):
+    import src.edhoc_subset as es
+    m = _msg1(provisioned_device, keystore, epoch_state.current_beacon())
+    assert _gw(keystore, m, epoch_state).success
+    def must_not_run(*a, **k):
+        raise AssertionError("expensive step ran on a resend")
+    monkeypatch.setattr(es, "verify_signature_under_reconstructed_key", must_not_run)
+    monkeypatch.setattr(es, "derive_session_key", must_not_run)
+    monkeypatch.setattr(es, "encode_edhoc_msg2", must_not_run)
+    assert _gw(keystore, m, epoch_state).reason == AuthFailureReason.RETRANSMISSION
+
+
+def test_no_resend_after_rollover(keystore, provisioned_device, epoch_state, epoch_clock):
+    m = _msg1(provisioned_device, keystore, epoch_state.current_beacon())
+    assert _gw(keystore, m, epoch_state).success
+    epoch_clock.advance(EPOCH_LENGTH_S)
+    r = _gw(keystore, m, epoch_state)
+    assert r.reason == AuthFailureReason.SIGNATURE_INVALID
+    assert r.msg2_bytes is None
+
+
+def test_device_revoked_after_acceptance_gets_no_resend(keystore, provisioned_device,
+                                                       epoch_state):
+    from src.did_utils import encode_did_key
+    fetcher = MockFetcher()
+    mgr = RevocationSyncManager("http://x", fetch_fn=fetcher)
+    mgr.sync_now()
+    m = _msg1(provisioned_device, keystore, epoch_state.current_beacon())
+    assert gateway_process_msg1_build_msg2(keystore, m, revocation_manager=mgr,
+                                           epoch_state=epoch_state).success
+    fetcher.entries = {encode_did_key(provisioned_device["d"] * G): "2026-04-19T11:00:00Z"}
+    mgr.sync_now()
+    r = gateway_process_msg1_build_msg2(keystore, m, revocation_manager=mgr,
+                                        epoch_state=epoch_state)
+    assert r.reason == AuthFailureReason.DEVICE_REVOKED
+    assert r.msg2_bytes is None
 
 
 def test_replay_after_rollover_rejected_by_beacon(keystore, provisioned_device,

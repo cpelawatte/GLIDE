@@ -6,7 +6,7 @@ import threading
 import pytest
 
 from src.beacon import (
-    BEACON_SIZE, BEACON_VALUE_SIZE, Beacon, EpochState, RecordResult,
+    BEACON_SIZE, BEACON_VALUE_SIZE, MAX_RESENDS, Beacon, EpochState, RecordResult,
 )
 
 
@@ -54,6 +54,7 @@ def test_constructor_validation():
     with pytest.raises(ValueError): EpochState(0, 1)
     with pytest.raises(ValueError): EpochState(10, 0)
     with pytest.raises(ValueError): EpochState(10, 1, per_device_cap=0)
+    with pytest.raises(ValueError): EpochState(10, 1, max_resends=-1)
 
 # ---------------------------------------------------------------- epochs
 
@@ -184,3 +185,93 @@ def test_concurrent_records_of_the_same_nonce_accept_exactly_one():
     assert results.count(RecordResult.RECORDED) == 1
     assert results.count(RecordResult.REPLAY) == 15
     assert s.occupancy == 1
+
+# ---------------------------------------------------------------- T2 resend
+
+D1, D2 = b"\x11" * 32, b"\x22" * 32       # two different MSG_1 digests
+
+def _accepted(s, digest=D1, reply=b"MSG2"):
+    b = s.current_beacon()
+    assert s.record(b, b"dev", b"n1", digest) is RecordResult.RECORDED
+    assert s.store_reply(b, b"dev", b"n1", reply, "did:key:z1")
+    return b
+
+def test_max_resends_matches_coap_max_retransmit():
+    assert MAX_RESENDS == 4                       # RFC 7252 section 4.8
+
+def test_resend_returns_the_stored_reply_and_adds_nothing():
+    s, _ = make(); b = _accepted(s)
+    got = s.resend(b, b"dev", b"n1", D1)
+    assert got.reply == b"MSG2" and got.device_did == "did:key:z1"
+    assert s.occupancy == 1                       # no new entry
+
+def test_resend_needs_the_same_msg1_digest():
+    s, _ = make(); b = _accepted(s)
+    assert s.resend(b, b"dev", b"n1", D2) is None
+
+def test_resend_needs_the_same_device_and_nonce():
+    s, _ = make(); b = _accepted(s)
+    assert s.resend(b, b"other", b"n1", D1) is None
+    assert s.resend(b, b"dev", b"n2", D1) is None
+
+def test_resend_stops_after_max_resends():
+    s, _ = make(); b = _accepted(s)
+    for _ in range(MAX_RESENDS):
+        assert s.resend(b, b"dev", b"n1", D1) is not None
+    assert s.resend(b, b"dev", b"n1", D1) is None
+
+def test_max_resends_zero_turns_resend_off():
+    clock = FakeClock()
+    s = EpochState(300, 4, max_resends=0, clock=clock, value_source=counting_values())
+    b = _accepted(s)
+    assert s.resend(b, b"dev", b"n1", D1) is None
+
+def test_no_resend_before_the_reply_is_stored_and_it_does_not_count():
+    s, _ = make(); b = s.current_beacon()
+    s.record(b, b"dev", b"n1", D1)
+    assert s.resend(b, b"dev", b"n1", D1) is None
+    s.store_reply(b, b"dev", b"n1", b"MSG2")
+    for _ in range(MAX_RESENDS):
+        assert s.resend(b, b"dev", b"n1", D1) is not None
+
+def test_record_without_a_digest_is_never_resent():
+    s, _ = make(); b = s.current_beacon()
+    s.record(b, b"dev", b"n1")
+    s.store_reply(b, b"dev", b"n1", b"MSG2")
+    assert s.resend(b, b"dev", b"n1", D1) is None
+
+def test_stored_replies_die_with_the_epoch():
+    s, clock = make(); old = _accepted(s)
+    clock.advance(300); new = s.current_beacon()
+    assert s.resend(old, b"dev", b"n1", D1) is None
+    assert s.resend(new, b"dev", b"n1", D1) is None
+
+def test_resend_with_a_made_up_beacon_is_refused():
+    s, _ = make(); real = _accepted(s)
+    assert s.resend(Beacon(real.epoch, bytes(16)), b"dev", b"n1", D1) is None
+    assert s.resend(real, b"dev", b"n1", D1) is not None   # the real one still works
+
+def test_store_reply_rules():
+    s, clock = make(); b = s.current_beacon()
+    assert not s.store_reply(b, b"dev", b"n1", b"X")      # no such entry
+    s.record(b, b"dev", b"n1", D1)
+    assert s.store_reply(b, b"dev", b"n1", b"FIRST")
+    assert not s.store_reply(b, b"dev", b"n1", b"SECOND")  # never overwritten
+    assert s.resend(b, b"dev", b"n1", D1).reply == b"FIRST"
+    s.record(b, b"dev", b"n2", D2); clock.advance(300)
+    assert not s.store_reply(b, b"dev", b"n2", b"LATE")    # epoch ended
+
+@pytest.mark.parametrize("bad", [b"", bytes(31), bytes(33)])
+def test_record_rejects_a_wrong_size_digest(bad):
+    s, _ = make(); b = s.current_beacon()
+    with pytest.raises(ValueError):
+        s.record(b, b"dev", b"n1", bad)
+    assert s.occupancy == 0
+
+def test_concurrent_resends_never_exceed_the_limit():
+    s, _ = make(); b = _accepted(s); results = []
+    def worker(): results.append(s.resend(b, b"dev", b"n1", D1))
+    threads = [threading.Thread(target=worker) for _ in range(16)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+    assert sum(r is not None for r in results) == MAX_RESENDS

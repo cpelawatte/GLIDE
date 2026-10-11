@@ -22,6 +22,13 @@ Locked design decisions (project context, section 4.2):
     `per_device_cap` accepted authentications per device per epoch, so its size
     is bounded by per_device_cap x max_devices.
   * Overflow FAILS CLOSED (and is logged): never accept without recording.
+  * Lost MSG_2 (decision 6, T2: resend, don't re-sign). Each entry also keeps
+    the SHA-256 of the MSG_1 that was accepted and the MSG_2 sent for it. A
+    byte-identical MSG_1 in the same epoch gets that stored MSG_2 again, at
+    most `max_resends` times (default 4, RFC 7252 MAX_RETRANSMIT). A resend
+    is never an acceptance: no new entry, no new gateway signature, no new
+    session key. Any other MSG_1 reusing the nonce is a replay. Stored
+    replies die with the epoch.
 
 Epoch rolling is lazy: the epoch advances when a method is called and its
 stopwatch has run out. The component that broadcasts the beacon must call
@@ -44,7 +51,7 @@ import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable
+from typing import Callable, Optional
 
 log = logging.getLogger(__name__)
 
@@ -52,6 +59,8 @@ EPOCH_COUNTER_SIZE = 4                  # uint32, big-endian
 BEACON_VALUE_SIZE = 16                  # 128-bit, matches P-256 / AES-128
 BEACON_SIZE = EPOCH_COUNTER_SIZE + BEACON_VALUE_SIZE   # 20 bytes
 DEFAULT_PER_DEVICE_CAP = 2              # decision 6: max 2 accepted per device per epoch
+MSG1_DIGEST_SIZE = 32                   # SHA-256 of the whole MSG_1
+MAX_RESENDS = 4                         # T2: RFC 7252 section 4.8 MAX_RETRANSMIT
 _EPOCH_MODULUS = 2 ** (8 * EPOCH_COUNTER_SIZE)
 
 
@@ -87,6 +96,22 @@ class RecordResult(Enum):
     EPOCH_ENDED = "epoch_ended"              # the epoch rolled while the message was being verified
 
 
+@dataclass
+class _Entry:
+    """One accepted authentication on the sheet (keyed by device, then nonce)."""
+    msg1_digest: Optional[bytes]       # None: this entry can never be resent
+    reply: Optional[bytes] = None      # the MSG_2 sent for it, once stored
+    device_did: Optional[str] = None   # for the revocation re-check on resend
+    resends: int = 0
+
+
+@dataclass(frozen=True)
+class StoredReply:
+    """What resend() hands back: the stored MSG_2 and whose it is."""
+    reply: bytes
+    device_did: Optional[str]
+
+
 class EpochState:
     """The gateway's current epoch and its nonce sheet."""
 
@@ -96,6 +121,7 @@ class EpochState:
         max_devices: int,
         *,
         per_device_cap: int = DEFAULT_PER_DEVICE_CAP,
+        max_resends: int = MAX_RESENDS,
         clock: Callable[[], float] = time.monotonic,
         value_source: Callable[[int], bytes] = secrets.token_bytes,
         first_epoch: int = 0,
@@ -106,8 +132,11 @@ class EpochState:
             raise ValueError("max_devices must be at least 1")
         if per_device_cap < 1:
             raise ValueError("per_device_cap must be at least 1")
+        if max_resends < 0:
+            raise ValueError("max_resends must be 0 (resend off) or more")
         self._epoch_length_s = float(epoch_length_s)
         self._per_device_cap = per_device_cap
+        self._max_resends = max_resends
         # Stopwatch (monotonic) time, NOT wall-clock time: a wall clock can jump
         # when the system time is corrected, which would stretch or shrink an epoch.
         self._clock = clock
@@ -116,7 +145,9 @@ class EpochState:
         self.capacity = per_device_cap * max_devices   # the bound on the sheet
         self._beacon = Beacon(first_epoch % _EPOCH_MODULUS, value_source(BEACON_VALUE_SIZE))
         self._started = clock()
-        self._sheet: dict[bytes, list[bytes]] = {}
+        # device_key -> {nonce -> _Entry}. Bounded: at most per_device_cap
+        # nonces per device and `capacity` entries in all.
+        self._sheet: dict[bytes, dict[bytes, _Entry]] = {}
         self._entries = 0
 
     # -- internal (caller holds the lock) --------------------------------
@@ -149,13 +180,19 @@ class EpochState:
             self._roll_if_due()
             return nonce in self._sheet.get(device_key, ())
 
-    def record(self, beacon: Beacon, device_key: bytes, nonce: bytes) -> RecordResult:
+    def record(self, beacon: Beacon, device_key: bytes, nonce: bytes,
+               msg1_digest: Optional[bytes] = None) -> RecordResult:
         """Write a nonce on the sheet. Call ONLY after the whole authentication succeeded.
 
         `beacon` is the beacon the signature was verified against. If that epoch
         has ended meanwhile the result is EPOCH_ENDED and nothing is written:
         an ended epoch is never accepted (strict rule; Tamarin: Epoch_Is_Current).
+
+        `msg1_digest` is the SHA-256 of the whole accepted MSG_1. Without it the
+        entry can never be resent (the safe default).
         """
+        if msg1_digest is not None and len(msg1_digest) != MSG1_DIGEST_SIZE:
+            raise ValueError(f"msg1_digest must be {MSG1_DIGEST_SIZE} bytes")
         with self._lock:
             self._roll_if_due()
             if beacon != self._beacon:
@@ -170,10 +207,51 @@ class EpochState:
                             self._entries)
                 return RecordResult.SHEET_FULL
             if nonces is None:
-                nonces = self._sheet[device_key] = []
-            nonces.append(nonce)
+                nonces = self._sheet[device_key] = {}
+            nonces[nonce] = _Entry(msg1_digest)
             self._entries += 1
             return RecordResult.RECORDED
+
+    def store_reply(self, beacon: Beacon, device_key: bytes, nonce: bytes,
+                    reply: bytes, device_did: Optional[str] = None) -> bool:
+        """Keep the MSG_2 just sent for an entry, so it can be resent (T2).
+
+        Stored at most once per entry, and only in the epoch the entry was
+        recorded in. Returns False and stores nothing if that epoch has ended,
+        the entry does not exist, or a reply is already stored.
+        """
+        with self._lock:
+            self._roll_if_due()
+            if beacon != self._beacon:
+                return False
+            entry = self._sheet.get(device_key, {}).get(nonce)
+            if entry is None or entry.reply is not None:
+                return False
+            entry.reply = bytes(reply)
+            entry.device_did = device_did
+            return True
+
+    def resend(self, beacon: Beacon, device_key: bytes, nonce: bytes,
+               msg1_digest: bytes) -> Optional[StoredReply]:
+        """The stored MSG_2 for a byte-identical MSG_1, or None (T2).
+
+        Returns None unless ALL of these hold: the epoch of `beacon` is still
+        current, the entry exists, its MSG_1 digest equals `msg1_digest`, a
+        reply is stored, and fewer than max_resends resends have been made.
+        Adds nothing to the sheet; only the entry's resend counter goes up.
+        A resend is never an acceptance.
+        """
+        with self._lock:
+            self._roll_if_due()
+            if beacon != self._beacon:
+                return None
+            entry = self._sheet.get(device_key, {}).get(nonce)
+            if (entry is None or entry.msg1_digest is None or entry.reply is None
+                    or entry.msg1_digest != msg1_digest
+                    or entry.resends >= self._max_resends):
+                return None
+            entry.resends += 1
+            return StoredReply(entry.reply, entry.device_did)
 
     @property
     def occupancy(self) -> int:
