@@ -36,6 +36,7 @@
 #define AUTH_ERR_CBOR           -2
 #define AUTH_ERR_VERIFY         -3
 #define AUTH_ERR_BUFFER_SMALL   -4
+#define AUTH_ERR_RNG            -5   /* no usable random source: nothing built */
 
 /*
  * device_auth_state_t:

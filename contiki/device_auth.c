@@ -7,7 +7,12 @@
  *   ROM/RAM footprint measured via msp430-size on the compiled binary.
  *
  * Crypto dependencies:
- *   - micro-ecc (uECC) for P-256 ECDSA sign/verify and ECDH
+ *   - micro-ecc (uECC) for P-256 ECDSA sign/verify and ECDH; signing is
+ *     deterministic (RFC 6979-style, micro-ecc variant), so d never
+ *     depends on the random source
+ *   - random source for e_d and nonce_d: Contiki-NG CSPRNG on CC2538
+ *     (project-conf.h, seeded from radio noise at boot), micro-ecc's host
+ *     default elsewhere (Cooja native mote); none -> AUTH_ERR_RNG
  *   - bundled sha256_impl.c for SHA-256, used in streaming mode
  *   - Contiki-NG os/lib/cbor.h for CBOR encoding/decoding
  */
@@ -22,6 +27,7 @@
 #include "os/lib/cbor.h"
 #include "os/net/security/micro-ecc/uECC.h"
 #include "sha256_impl.h"
+#include "lib/csprng.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -74,13 +80,74 @@ static void hash_final(sha256_impl_ctx_t *ctx, uint8_t *digest)
  * Signature is 64 bytes (r||s).
  * public_key_uncompressed: 64 bytes (x||y), no 0x04 prefix.
  * --------------------------------------------------------------------------- */
-static int ecdsa_sign_hash(const uint8_t *private_key, const uint8_t *digest,
-                           uint8_t *signature)
+/* Deterministic signing. micro-ecc derives the per-signature secret k from d
+ * and the digest with an RFC 6979-style HMAC-SHA-256 DRBG instead of drawing
+ * it from the random source, so a weak or repeating random source can never
+ * reveal d. Not byte-identical to RFC 6979 (micro-ecc reads k in native byte
+ * order and does not reduce H(m) mod n), so signatures differ from an RFC
+ * 6979 signer's; they verify normally.
+ * micro-ecc calls back into these three functions for its HMAC; they run on
+ * a borrowed scratch hash state, so signing needs no second 104 B context. */
+typedef struct {
+    uECC_HashContext   uecc;   /* first member: micro-ecc passes &uecc back */
+    sha256_impl_ctx_t *sha;    /* borrowed scratch hash state */
+} rfc6979_hash_t;
+
+static void rfc6979_init(const uECC_HashContext *base)
 {
-    if(!uECC_sign(private_key, digest, 32, signature, uECC_secp256r1())) {
+    hash_init(((const rfc6979_hash_t *)base)->sha);
+}
+
+static void rfc6979_update(const uECC_HashContext *base,
+                           const uint8_t *message, unsigned message_size)
+{
+    hash_update(((const rfc6979_hash_t *)base)->sha, message, message_size);
+}
+
+static void rfc6979_finish(const uECC_HashContext *base, uint8_t *hash_result)
+{
+    hash_final(((const rfc6979_hash_t *)base)->sha, hash_result);
+}
+
+static int ecdsa_sign_hash(const uint8_t *private_key, const uint8_t *digest,
+                           uint8_t *signature, sha256_impl_ctx_t *scratch)
+{
+    uint8_t tmp[2 * 32 + 64];   /* HMAC-DRBG K, V and one SHA-256 block */
+    rfc6979_hash_t h = {
+        { rfc6979_init, rfc6979_update, rfc6979_finish, 64, 32, tmp },
+        scratch
+    };
+
+    if(!uECC_sign_deterministic(private_key, digest, 32, &h.uecc, signature,
+                                uECC_secp256r1())) {
         return AUTH_ERR_CRYPTO;
     }
     return AUTH_OK;
+}
+
+/* ---------------------------------------------------------------------------
+ * Random source for e_d and nonce_d. Fail closed: with no source, nothing is
+ * built.
+ *   CC2538 (CSPRNG_ENABLED via project-conf.h): Contiki-NG's CSPRNG, seeded
+ *     from radio I/Q noise at boot; csprng_rand() returns false until seeded.
+ *   Cooja native mote and host builds: micro-ecc's built-in default (the
+ *     host's /dev/urandom), registered automatically by micro-ecc.
+ * --------------------------------------------------------------------------- */
+#if CSPRNG_ENABLED
+static int csprng_source(uint8_t *dest, unsigned size)
+{
+    return csprng_rand(dest, size) ? 1 : 0;
+}
+#endif /* CSPRNG_ENABLED */
+
+static uECC_RNG_Function random_source(void)
+{
+#if CSPRNG_ENABLED
+    if(uECC_get_rng() != csprng_source) {
+        uECC_set_rng(csprng_source);
+    }
+#endif /* CSPRNG_ENABLED */
+    return uECC_get_rng();
 }
 
 static int ecdsa_verify_hash(const uint8_t *public_key_uncompressed,
@@ -122,22 +189,28 @@ int device_auth_build_msg1(device_auth_state_t *state,
     rtimer_clock_t t_start, t_end;
     size_t msg1_len;
     int ret;
-    int i;
+    uECC_RNG_Function rng = random_source();
+
+    if(rng == NULL) {
+        return AUTH_ERR_RNG;              /* no random source: build nothing */
+    }
 
     t_start = RTIMER_NOW();
     ENERGEST_ON(ENERGEST_TYPE_CPU);
 
-    /* Step 1: Generate ephemeral keypair */
+    /* Step 1: Fresh device nonce from the random source. Drawn first, so an
+     * unseeded source is reported as AUTH_ERR_RNG before any other work. */
+    if(!rng(nonce_d, AUTH_NONCE_LEN)) {
+        ENERGEST_OFF(ENERGEST_TYPE_CPU);
+        return AUTH_ERR_RNG;
+    }
+
+    /* Step 2: Generate ephemeral keypair */
     if(!uECC_make_key(E_d_uncompressed, state->e_d, curve)) {
         ENERGEST_OFF(ENERGEST_TYPE_CPU);
         return AUTH_ERR_CRYPTO;
     }
     uECC_compress(E_d_uncompressed, E_d_compressed, curve);
-
-    /* Step 2: Generate device nonce (fixed pattern for simulation) */
-    for(i = 0; i < AUTH_NONCE_LEN; i++) {
-        nonce_d[i] = (uint8_t)(i ^ 0xA5);
-    }
 
     /* Step 3: Hash the signed content E_d || R || cert_info || nonce_d || Q_gw
      * piece by piece (no signing buffer). state->msg1_hash serves as scratch
@@ -155,7 +228,8 @@ int device_auth_build_msg1(device_auth_state_t *state,
     hash_final(&state->msg1_hash, digest);
 
     /* Step 4: Sign with device long-term private key d */
-    ret = ecdsa_sign_hash(DEVICE_PRIVATE_KEY, digest, signature);
+    ret = ecdsa_sign_hash(DEVICE_PRIVATE_KEY, digest, signature,
+                          &state->msg1_hash);   /* scratch until Step 6 */
     if(ret != AUTH_OK) {
         ENERGEST_OFF(ENERGEST_TYPE_CPU);
         return ret;
