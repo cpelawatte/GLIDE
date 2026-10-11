@@ -38,7 +38,7 @@
 /* ---------------------------------------------------------------------------
  * CBOR message type tags (must match Python cbor_codec.py)
  * --------------------------------------------------------------------------- */
-#define PROTOCOL_VERSION    1
+#define PROTOCOL_VERSION    2   /* v2 (Fix 2): MSG_1 signature also covers the beacon */
 #define MSG_EDHOC_1         0x05
 #define MSG_EDHOC_2         0x06
 
@@ -177,6 +177,7 @@ static void decompress_point(const uint8_t *compressed, uint8_t *uncompressed)
  * Returns number of bytes written on success, negative error code on failure.
  * --------------------------------------------------------------------------- */
 int device_auth_build_msg1(device_auth_state_t *state,
+                            const uint8_t *beacon,
                             uint8_t *buf, size_t buf_len)
 {
     uECC_Curve curve = uECC_secp256r1();
@@ -191,6 +192,9 @@ int device_auth_build_msg1(device_auth_state_t *state,
     int ret;
     uECC_RNG_Function rng = random_source();
 
+    if(beacon == NULL) {
+        return AUTH_ERR_NO_BEACON;        /* no beacon held: build nothing */
+    }
     if(rng == NULL) {
         return AUTH_ERR_RNG;              /* no random source: build nothing */
     }
@@ -212,19 +216,24 @@ int device_auth_build_msg1(device_auth_state_t *state,
     }
     uECC_compress(E_d_uncompressed, E_d_compressed, curve);
 
-    /* Step 3: Hash the signed content E_d || R || cert_info || nonce_d || Q_gw
+    /* Step 3: Hash the signed content
+     *   E_d || R || cert_info || nonce_d || Q_gw || beacon
      * piece by piece (no signing buffer). state->msg1_hash serves as scratch
      * here; it is re-initialised for MSG_1 in Step 6.
      *
      * Q_gw binds the signature to the intended gateway, so a captured MSG_1
-     * is rejected by any other gateway pinning the same issuer. Q_gw is
-     * pre-provisioned on both sides and is NOT transmitted: zero wire cost. */
+     * is rejected by any other gateway pinning the same issuer. The beacon
+     * binds it to one epoch (Fix 2): the gateway checks against ITS OWN
+     * current beacon, so a recorded MSG_1 stops verifying once the epoch
+     * rolls. Neither is transmitted: zero wire cost. Same order as
+     * src/edhoc_subset.py _msg1_signing_bytes(); the beacon is last. */
     hash_init(&state->msg1_hash);
     hash_update(&state->msg1_hash, E_d_compressed, 33);
     hash_update(&state->msg1_hash, DEVICE_CERT_R, DEVICE_CERT_R_LEN);
     hash_update(&state->msg1_hash, DEVICE_CERT_INFO, DEVICE_CERT_INFO_LEN);
     hash_update(&state->msg1_hash, nonce_d, AUTH_NONCE_LEN);
     hash_update(&state->msg1_hash, GATEWAY_PUBLIC_KEY, GATEWAY_PUBLIC_KEY_LEN);
+    hash_update(&state->msg1_hash, beacon, AUTH_BEACON_LEN);
     hash_final(&state->msg1_hash, digest);
 
     /* Step 4: Sign with device long-term private key d */

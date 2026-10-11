@@ -23,6 +23,7 @@
 #define AUTH_SIGNATURE_LEN      64
 #define AUTH_COMPRESSED_PT_LEN  33
 #define AUTH_SESSION_KEY_LEN    16
+#define AUTH_BEACON_LEN         20   /* Fix 2: 4 B epoch (big-endian) + 16 B random value */
 
 /* MSG_1 maximum size (conservative upper bound) */
 #define AUTH_MSG1_MAX_LEN  256
@@ -37,6 +38,7 @@
 #define AUTH_ERR_VERIFY         -3
 #define AUTH_ERR_BUFFER_SMALL   -4
 #define AUTH_ERR_RNG            -5   /* no usable random source: nothing built */
+#define AUTH_ERR_NO_BEACON      -6   /* no epoch beacon held: nothing built (Fix 2) */
 
 /*
  * device_auth_state_t:
@@ -62,10 +64,16 @@ typedef struct {
  *   Builds EDHOC MSG_1 using pre-provisioned credentials.
  *   Populates `state` which must be retained for MSG_2 processing.
  *
+ *   beacon:      the latest gateway epoch beacon the device holds, exactly
+ *                AUTH_BEACON_LEN bytes as broadcast. Signed over (last),
+ *                never sent. NULL -> AUTH_ERR_NO_BEACON, nothing built.
+ *                The device cannot check a beacon; a stale or fake one
+ *                only makes the gateway reject this MSG_1.
  *   buf/buf_len: output buffer for the CBOR-encoded MSG_1
  *   Returns number of bytes written, or negative on error.
  */
 int device_auth_build_msg1(device_auth_state_t *state,
+                            const uint8_t *beacon,
                             uint8_t *buf, size_t buf_len);
 
 /*
