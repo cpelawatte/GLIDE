@@ -16,6 +16,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "sha256_impl.h"
 
 /* Wire sizes matching Python cbor_codec.py */
 #define AUTH_NONCE_LEN          16
@@ -39,15 +40,20 @@
 /*
  * device_auth_state_t:
  *   State retained by the device between MSG_1 send and MSG_2 receive.
- *   Holds the ephemeral private key needed for session key derivation.
  *   Must NOT be transmitted.
+ *
+ *   e_d        ephemeral private key, needed for ECDH when MSG_2 arrives.
+ *   msg1_hash  SHA-256 state after absorbing the MSG_1 bytes. Both hashes the
+ *              device needs later -- the MSG_2 signature check over
+ *              MSG_1 || E_g || nonce_g, and the transcript MSG_1 || MSG_2 --
+ *              start with MSG_1, so MSG_1 is hashed once and this state is
+ *              copied for each. Replaces a 256 B copy of MSG_1.
+ *   (Removed: E_d[64], never read after MSG_1 is built; nonce_d[16], already
+ *    inside MSG_1; msg1[256] and msg1_len, replaced by msg1_hash.)
  */
 typedef struct {
-    uint8_t e_d[32];           /* Ephemeral private key */
-    uint8_t E_d[64];           /* Ephemeral public key (uncompressed x,y) */
-    uint8_t nonce_d[16];       /* Device nonce */
-    uint8_t msg1[AUTH_MSG1_MAX_LEN]; /* Saved MSG_1 bytes for transcript */
-    size_t  msg1_len;
+    uint8_t           e_d[32];
+    sha256_impl_ctx_t msg1_hash;
 } device_auth_state_t;
 
 /*
