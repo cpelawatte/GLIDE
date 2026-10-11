@@ -1,12 +1,17 @@
 CONTIKI_PROJECT = device_auth_main
 all: $(CONTIKI_PROJECT)
 
-TARGET ?= sky
+# device_auth_main.c builds for cooja (Cooja native mote), cc2538dk
+# (footprint, scripts/cap_evidence.sh) and native (host e2e test).
+TARGET ?= cooja
 
 PROJECT_SOURCEFILES += device_auth.c
+PROJECT_SOURCEFILES += beacon_client.c
 PROJECT_SOURCEFILES += hkdf_sha256.c
 PROJECT_SOURCEFILES += sha256_impl.c
+ifeq ($(TARGET),cc2538dk)
 PROJECT_SOURCEFILES += syscalls_stub.c
+endif
 
 MODULES += os/net/security/micro-ecc
 CFLAGS += -DuECC_SUPPORTS_secp256r1=1

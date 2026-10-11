@@ -411,13 +411,10 @@ int device_auth_process_msg2(device_auth_state_t *state,
         return AUTH_ERR_CRYPTO;
     }
 
+    /* The session key is never printed; the caller prints a key check
+     * value instead (device_auth_main.c, put_kcv). */
     LOG_INFO("[AUTH] MSG_2 OK. Session key derived. %lu ticks\n",
            (unsigned long)(t_end - t_start));
-    LOG_INFO("[AUTH] Key: ");
-    for(i = 0; i < AUTH_SESSION_KEY_LEN; i++) {
-        printf("%02x", session_key[i]);
-    }
-    printf("\n");
 
     return AUTH_OK;
 }

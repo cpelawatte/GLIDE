@@ -76,21 +76,21 @@ python -m pytest -q --collect-only 2>&1 | grep -ciE "reject|invalid|expired|revo
 # ROM = text.  RAM = data + bss.
 # Expected full image:      text 79,827   data+bss 16,117
 # Expected protocol-only:   text 64,262   data+bss  9,963
-# NOTE: target is device_auth_main_footprint, NOT device_auth_main.
-banner "4a. Footprint — full image (IPv6 + RPL)"
+# NOTE: one firmware source, device_auth_main.c, for Cooja and this build (Fix 2 D3a).
+banner "4a. Footprint — full image (IPv6, no RPL: the Makefile sets NULLROUTING)"
 cd "$FYP/contiki" || exit 1
-make TARGET=cc2538dk CONTIKI_PROJECT=device_auth_main_footprint clean >/dev/null 2>&1
-make TARGET=cc2538dk CONTIKI_PROJECT=device_auth_main_footprint > "$OUT/04a_build_full.log" 2>&1
-arm-none-eabi-size build/cc2538dk/device_auth_main_footprint.cc2538dk \
+make TARGET=cc2538dk CONTIKI_PROJECT=device_auth_main clean >/dev/null 2>&1
+make TARGET=cc2538dk CONTIKI_PROJECT=device_auth_main > "$OUT/04a_build_full.log" 2>&1
+arm-none-eabi-size build/cc2538dk/device_auth_main.cc2538dk \
   | tee "$OUT/04a_footprint_full.txt"
 
 banner "4b. Footprint — protocol isolated (NullNet, no RPL)"
-make TARGET=cc2538dk CONTIKI_PROJECT=device_auth_main_footprint \
+make TARGET=cc2538dk CONTIKI_PROJECT=device_auth_main \
      MAKE_NET=MAKE_NET_NULLNET MAKE_ROUTING=MAKE_ROUTING_NULLROUTING clean >/dev/null 2>&1
-make TARGET=cc2538dk CONTIKI_PROJECT=device_auth_main_footprint \
+make TARGET=cc2538dk CONTIKI_PROJECT=device_auth_main \
      MAKE_NET=MAKE_NET_NULLNET MAKE_ROUTING=MAKE_ROUTING_NULLROUTING \
      > "$OUT/04b_build_isolated.log" 2>&1
-arm-none-eabi-size build/cc2538dk/device_auth_main_footprint.cc2538dk \
+arm-none-eabi-size build/cc2538dk/device_auth_main.cc2538dk \
   | tee "$OUT/04b_footprint_isolated.txt"
 
 cd "$FYP" || exit 1
