@@ -25,11 +25,14 @@
 #define AUTH_SESSION_KEY_LEN    16
 #define AUTH_BEACON_LEN         20   /* Fix 2: 4 B epoch (big-endian) + 16 B random value */
 
-/* MSG_1 maximum size (conservative upper bound) */
-#define AUTH_MSG1_MAX_LEN  256
+/* MSG_1 buffer size. MSG_1 is always 174 B (fixed-size fields); 176 keeps
+ * 4-byte alignment. A larger MSG_1 fails closed (AUTH_ERR_CBOR or
+ * AUTH_ERR_BUFFER_SMALL) and the host / e2e / bridge tests fail. */
+#define AUTH_MSG1_MAX_LEN  176
 
-/* MSG_2 maximum size */
-#define AUTH_MSG2_MAX_LEN  192
+/* MSG_2 input buffer size. MSG_2 is always 126 B; a longer input line is
+ * dropped by device_auth_main.c (and the e2e / bridge tests fail). */
+#define AUTH_MSG2_MAX_LEN  128
 
 /* Return codes */
 #define AUTH_OK                  0
