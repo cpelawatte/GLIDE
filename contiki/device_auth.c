@@ -10,9 +10,12 @@
  *   - micro-ecc (uECC) for P-256 ECDSA sign/verify and ECDH; signing is
  *     deterministic (RFC 6979-style, micro-ecc variant), so d never
  *     depends on the random source
- *   - random source for e_d and nonce_d: Contiki-NG CSPRNG on CC2538
- *     (project-conf.h, seeded from radio noise at boot), micro-ecc's host
- *     default elsewhere (Cooja native mote); none -> AUTH_ERR_RNG
+ *   - random source for e_d and nonce_d: Contiki-NG's CSPRNG where it is
+ *     enabled -- CC2538 (project-conf.h, seeded from radio noise at boot)
+ *     and Cooja (enabled by the platform, seeded from the simulation's
+ *     random seed: reproducible, simulation only); micro-ecc's host
+ *     default (/dev/urandom) on native and host-test builds;
+ *     none -> AUTH_ERR_RNG
  *   - bundled sha256_impl.c for SHA-256, used in streaming mode
  *   - Contiki-NG os/lib/cbor.h for CBOR encoding/decoding
  */
@@ -130,8 +133,10 @@ static int ecdsa_sign_hash(const uint8_t *private_key, const uint8_t *digest,
  * built.
  *   CC2538 (CSPRNG_ENABLED via project-conf.h): Contiki-NG's CSPRNG, seeded
  *     from radio I/Q noise at boot; csprng_rand() returns false until seeded.
- *   Cooja native mote and host builds: micro-ecc's built-in default (the
- *     host's /dev/urandom), registered automatically by micro-ecc.
+ *   Cooja native mote: the Cooja platform enables the same CSPRNG and seeds
+ *     it from the simulation's random seed (deterministic, simulation only).
+ *   Native and host-test builds: micro-ecc's built-in default (the host's
+ *     /dev/urandom), registered automatically by micro-ecc.
  * --------------------------------------------------------------------------- */
 #if CSPRNG_ENABLED
 static int csprng_source(uint8_t *dest, unsigned size)

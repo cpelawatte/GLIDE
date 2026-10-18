@@ -19,6 +19,13 @@ CFLAGS += -DuECC_SUPPORT_COMPRESSED_POINT=1
 CFLAGS += -DuECC_OPTIMIZATION_LEVEL=2
 
 CFLAGS += -Os
+# Cooja native motes: Ubuntu's GCC enables _FORTIFY_SOURCE by default, which
+# turns printf() into __printf_chk(). Cooja only redirects printf/puts/putchar
+# into the mote log (-Wl,--wrap), so formatted output would bypass Mote output
+# and the Serial Socket. Host hardening has no meaning for a simulated mote.
+ifeq ($(TARGET),cooja)
+CFLAGS += -U_FORTIFY_SOURCE
+endif
 CFLAGS += -Wno-error=format -Wno-error=format-extra-args
 
 CONTIKI_NG_PATH ?= /home/csp/Desktop/contiki-ng
