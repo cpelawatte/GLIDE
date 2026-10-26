@@ -1,5 +1,6 @@
 """
-EDHOC subset: two-message mutual authentication and session key establishment.
+EDHOC subset: two-message authentication (device origin at the gateway, gateway
+at the device) and session key establishment.
 
 Restricted subset of RFC 9528 (see docs/DESIGN_DECISIONS.md DD-003):
     - Method: 0 (signature-based on both sides)

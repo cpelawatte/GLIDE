@@ -3,7 +3,7 @@ DID utilities: did:key and did:web support for P-256 public keys.
 
 Two DID methods, deliberate split:
     did:key  → Device identity (self-certifying, no network resolution)
-    did:web  → Issuer identity (web-hosted DID document, TOFU-pinned)
+    did:web  → Issuer identity (web-hosted DID document, hash-pinned)
 
 This module handles:
     - Encoding P-256 public keys as did:key

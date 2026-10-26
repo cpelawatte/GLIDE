@@ -1,3 +1,5 @@
+> **Status (ICAC 2026 camera-ready, Oct 2026):** development notes. Where this file differs from `README.md`, the README and the evidence it lists are authoritative.
+
 # Design Decisions Log
 
 Each entry documents an architectural choice: what was decided, what
@@ -146,8 +148,9 @@ flow, device-side dual-key acceptance, and operator tooling. Adds
 ### Rationale summary
 
 Method 0 maximizes reuse of existing ECDSA-over-ECQV signing code and
-minimizes protocol surface area. Two messages is the minimum for mutual
-authentication and shared-key establishment; the third message's key
+minimizes protocol surface area. Two messages suffice for device-origin
+authentication, gateway authentication at the device and shared-key
+establishment; the third message's key
 confirmation is documented as a known limitation.
 
 Factory provisioning of the gateway's public key is consistent with our

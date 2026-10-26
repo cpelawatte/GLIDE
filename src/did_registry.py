@@ -6,18 +6,20 @@ Endpoints:
     GET /revocation.json         — List of revoked device DIDs with timestamps
     POST /revoke                 — Admin endpoint to revoke a device (test/demo only)
 
-The gateway fetches /.well-known/did.json once at bootstrap (TOFU), extracts Q_ca,
-and pins the hash. Subsequent device authentications verify against the pinned Q_ca
-without re-fetching the DID document.
+The gateway fetches /.well-known/did.json once at bootstrap, extracts Q_ca, and
+accepts it only if its hash matches an operator-distributed value (pinned-only
+bootstrap, DD-001). Subsequent device authentications verify against the pinned
+Q_ca without re-fetching the DID document.
 
 The gateway periodically polls /revocation.json to maintain fresh revocation state.
 The three states (ONLINE / GRACE / OFFLINE) are implemented in revocation_sync.py;
 this module just serves the data.
 
 Security note: In production, this server MUST serve over HTTPS (per W3C did:web spec).
-For Cooja simulation and local development, HTTP on localhost is acceptable. The TOFU
-pinning step binds the gateway to the specific Q_ca it sees on first contact, so
-MITM on first contact is the trust assumption.
+For Cooja simulation and local development, HTTP on localhost is acceptable. The
+pinned hash is distributed out of band, so a substituted key on the first fetch is
+detected, not trusted. The revocation list is not signed in this prototype: its
+integrity relies on an honest registry reached over an authenticated channel.
 """
 
 import base64
@@ -113,8 +115,8 @@ def build_did_document(issuer_did: str,
 def compute_did_document_hash(did_document: dict) -> str:
     """Compute SHA-256 hash of the canonical DID document.
 
-    The gateway uses this hash for TOFU pinning: it stores the hash on first
-    contact and verifies subsequent fetches match (detecting tampering).
+    A stable fingerprint of the DID document: any change to the document,
+    such as a substituted key, changes the hash.
 
     Canonicalization: sort keys alphabetically, compact JSON encoding.
     Full RFC 8785 JCS canonicalization would be more robust but overkill here.

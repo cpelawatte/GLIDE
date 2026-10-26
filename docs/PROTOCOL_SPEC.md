@@ -1,3 +1,5 @@
+> **Status (ICAC 2026 camera-ready, Oct 2026):** development notes. Where this file differs from `README.md`, the README and the evidence it lists are authoritative.
+
 # Protocol Specification
 
 ## ECQV Two-Pass Variant
@@ -20,7 +22,7 @@
 7. Device may discard `u`; retains `d`, `R`, `cert_info`
 
 **Verification (gateway-side):**
-1. Gateway has `Q_ca` pinned via TOFU from did:web bootstrap
+1. Gateway has `Q_ca` pinned at bootstrap (fetched via did:web, accepted only if it matches an operator-distributed hash)
 2. Receives `(R, cert_info)` from device during authentication
 3. Computes `e = H(R_compressed || cert_info) mod n`
 4. Reconstructs `Q_dev = e*R + Q_ca`
@@ -57,8 +59,8 @@ correctly-reconstructed `Q_dev`. An attacker cannot forge a valid
 The device's signature, produced with the `d` derived from the original
 values, will fail verification against the tampered reconstruction.
 
-**TOFU pinning assumption:** The gateway pins `Q_ca` on first contact with
-the issuer's did:web document. Subsequent verifications use the pinned `Q_ca`.
+**Pinning assumption:** The gateway pins `Q_ca` at bootstrap, accepting the
+issuer's did:web document only if its key matches an operator-distributed hash. Subsequent verifications use the pinned `Q_ca`.
 Compromise of the issuer after pinning does not retroactively invalidate
 authentications of devices provisioned before compromise, provided the
 issuer's private key `k_ca` has not been leaked.

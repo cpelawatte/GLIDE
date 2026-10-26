@@ -4,7 +4,7 @@ Issuer CLI: command-line interface for the issuer/CA role.
 Commands:
     init          Generate issuer keypair, persist to disk, print DID
     provision     Issue an implicit certificate for a device contribution
-    export        Show issuer DID + public key hash (for gateway TOFU)
+    export        Show issuer DID + public key hash (for gateway pinning)
     list-revoked  Query the registry and show currently revoked DIDs
 
 Key storage:
@@ -110,7 +110,7 @@ def load_issuer_keypair(path: Path) -> IssuerKeypair:
 def compute_issuer_public_key_hash(Q_ca: ellipticcurve.PointJacobi) -> str:
     """Compute SHA-256 hash of the compressed issuer public key.
 
-    This is what the gateway pins via TOFU. Any future fetch of the issuer's
+    The gateway pins this value (operator-distributed). Any fetch of the issuer's
     DID document must produce a document whose public key hashes to this value.
     """
     compressed = point_to_compressed(Q_ca)
@@ -156,7 +156,7 @@ def cli(ctx: click.Context, keyfile: Path) -> None:
 def init(ctx: click.Context, domain: str, force: bool) -> None:
     """Generate a new issuer keypair and persist it.
 
-    Also prints the issuer DID, public key hash (for TOFU pinning), and
+    Also prints the issuer DID, public key hash (for gateway pinning), and
     the path where the keyfile was saved.
     """
     keyfile: Path = ctx.obj["keyfile"]
@@ -177,7 +177,7 @@ def init(ctx: click.Context, domain: str, force: bool) -> None:
     click.echo(f"  Issuer DID:     {issuer_did}")
     click.echo(f"  Pubkey hash:    {pubkey_hash}")
     click.echo()
-    click.echo("Pin this pubkey hash in the gateway's TOFU store on first contact.")
+    click.echo("Give this pubkey hash to the gateway operator; the gateway pins it at bootstrap.")
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +261,7 @@ def provision(ctx: click.Context,
 )
 @click.pass_context
 def export(ctx: click.Context, domain: str) -> None:
-    """Print issuer DID, Q_ca (compressed hex), and pubkey hash for TOFU pinning."""
+    """Print issuer DID, Q_ca (compressed hex), and pubkey hash for gateway pinning."""
     keyfile: Path = ctx.obj["keyfile"]
 
     try:

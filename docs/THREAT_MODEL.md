@@ -1,3 +1,5 @@
+> **Status (ICAC 2026 camera-ready, Oct 2026):** development notes. Where this file differs from `README.md`, the README and the evidence it lists are authoritative.
+
 **Architectural note:** The implementation exposes only `bootstrap_pinned()`
 as a public API; TOFU is not a callable function. This is a deliberate
 design decision (see `docs/DESIGN_DECISIONS.md` DD-001) to eliminate the
@@ -31,14 +33,15 @@ Four actors participate:
   Identified by a `did:web` DID whose document contains the issuer's public
   key `Q_ca` in JWK format.
 - **Gateway**: semi-trusted verifier. Bootstraps by fetching the issuer's DID
-  document once (TOFU), pins the public key hash, and thereafter verifies
+  document once, accepts it only if its key matches an operator-distributed
+  hash, and thereafter verifies
   devices offline.
 - **DID Registry**: HTTPS server hosting the issuer's DID document and a
   revocation list.
 
 Trust anchors:
-- The gateway trusts the first `Q_ca` it sees from the issuer's did:web endpoint
-  (TOFU pinning assumption).
+- The gateway trusts `Q_ca` only if it matches the operator-distributed hash
+  (pinned-only bootstrap, DD-001).
 - Devices trust the `d` they derive during provisioning, assuming the issuer
   honestly produced `(R, s)` and the channel during provisioning was secure.
 
@@ -94,7 +97,8 @@ leaves the device.
 Goal: a recorded authentication transcript cannot be replayed. The two-message
 design does not meet this goal — it has no gateway-issued challenge, so a
 recorded MSG_1 replays within the credential validity window. Formally
-confirmed (Tamarin: Gateway_Replay_Possible). Replay does not compromise the
+confirmed (Tamarin: No_Replay is falsified; Gateway_Replay_Possible is only a
+reachability check). Replay does not compromise the
 session key (Tamarin: Session_Key_Secrecy). See §V and A3.
 
 ### G5: Revocation Completeness
@@ -119,7 +123,7 @@ the security-vs-availability trade-off operators face when tuning them
 for specific deployment profiles.
 
 ### G6: Offline-Capable Verification
-After a single TOFU bootstrap, the gateway can verify device authentications
+After a single pinned bootstrap, the gateway can verify device authentications
 without contacting the issuer or registry, subject to the revocation freshness
 window.
 
@@ -180,7 +184,7 @@ Under OFFLINE state (grace exceeded), the gateway fails closed — all
 authentication is rejected until sync is restored.
 
 ### G6 (Offline Verification) — Argument
-After TOFU bootstrap, the gateway holds `Q_ca` locally. Reconstruction
+After pinned bootstrap, the gateway holds `Q_ca` locally. Reconstruction
 `Q_dev = e*R + Q_ca` and signature verification are purely local computations.
 The only external dependency is revocation freshness (G5).
 
@@ -275,16 +279,18 @@ exposure window. The paper measures this window quantitatively.
 ## 6. Limitations and Future Work
 
 - **Adaptive corruption** is out of scope.
-- **Formal verification** of the mutual authentication and session key agreement 
-  properties has been completed using the Tamarin prover (v1.12.0) under a 
-  Dolev-Yao symbolic adversary model. Three all-traces lemmas are verified: 
-  gateway authentication of device (G1), device authentication of gateway (G2), 
-  and session key agreement. Protocol executability (exists-trace) is falsified 
-  under automatic heuristics — diagnosed to a setup-instance correlation 
-  constraint in the proof search rather than a protocol logic error — and is 
-  documented as a known limitation for future proof-script refinement. Secrecy, 
-  forward secrecy, and revocation enforcement are not covered by the formal model 
-  and remain future work.
+- **Formal verification** (camera-ready model; Tamarin 1.12.0; Dolev-Yao
+  adversary) covers nine lemmas. Five security properties are verified:
+  device-origin authentication (G1), gateway authentication at the device,
+  session-key agreement (single-party determinism; cross-party agreement
+  follows from gateway authentication at the device), session-key secrecy, and
+  addressed-gateway agreement once Q_gw is bound into the device signature.
+  No_Replay is falsified, confirming that G4 (replay resistance) is not
+  achieved. Three exists-trace lemmas are reachability checks. ECQV is
+  abstracted as issuer attestation, so G2 is argued rather than
+  machine-checked. Forward secrecy and revocation are not modelled.
+- **Distinct gateway keys** are assumed: the Q_gw binding prevents relay only
+  if each gateway holds its own long-term key pair.
 - **Privacy** (device unlinkability across sessions) is not addressed.
 - **Post-quantum migration** path is discussed but not implemented.
 - **Hardware protection of `k_ca`** is not implemented; production deployments
@@ -298,7 +304,7 @@ exposure window. The paper measures this window quantitatively.
   only. The adversary controls all messages between Device and Gateway. The 
   provisioning phase (Issuer_Setup, Issuer_Provision_Device) and gateway bootstrap 
   (!GatewayPinnedIssuer, !IssuerKey) are modeled as trusted setup outside adversary 
-  reach — consistent with the factory-provisioning and TOFU-pinning assumptions 
+  reach — consistent with the factory-provisioning and pinned-bootstrap assumptions 
   stated in A2 and A4. The G↔Registry channel (revocation sync) is not covered by 
   the Tamarin model; its security properties are analyzed separately in G5 and A6.
 - **Formal verification** of the protocol (using ProVerif, Tamarin, or
@@ -315,7 +321,7 @@ exposure window. The paper measures this window quantitatively.
 
 ### Implementation-specific limitations
 - **Issuer key rotation** is not implemented. Rotating `k_ca` requires
-  the gateway to re-execute TOFU bootstrap against the new `Q_ca`.
+  the gateway to re-execute the pinned bootstrap against the new `Q_ca`.
   Concurrent old-and-new key validity during rotation (to support graceful
   cutover) is future work.
 - **Multi-issuer federation** is out of scope. Each gateway pins exactly

@@ -266,7 +266,7 @@ def gateway_reconstruct_public_key(
     """Gateway reconstructs Q_dev = e*R + Q_ca from cert and pinned issuer key.
 
     This is the authentication step. The gateway:
-        1. Has Q_ca pinned via TOFU from did:web resolution at bootstrap
+        1. Has Q_ca pinned at bootstrap (did:web key checked against an operator-distributed hash)
         2. Receives (R, cert_info) from device during auth
         3. Computes e = H(R || cert_info)
         4. Reconstructs Q_dev = e*R + Q_ca

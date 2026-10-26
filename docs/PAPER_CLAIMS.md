@@ -1,3 +1,5 @@
+> **Status (ICAC 2026 camera-ready, Oct 2026):** development notes. Where this file differs from `README.md`, the README and the evidence it lists are authoritative.
+
 # Paper Claims Log
 
 Specific factual claims we want to make in the paper, each with:
@@ -97,7 +99,7 @@ computes the device's private key and therefore can impersonate the device.
 
 ## PC-004: Gateway offline verification after bootstrap
 
-**Claim**: After a single TOFU-pinned bootstrap, the gateway performs
+**Claim**: After a single pinned bootstrap, the gateway performs
 device authentication without any network contact. The cryptographic
 operations (SHA-256, two scalar multiplications, one point addition,
 ECDSA verify) are purely local. The only network dependency is periodic
