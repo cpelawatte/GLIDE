@@ -33,10 +33,12 @@ yourself (the default in `contiki/Makefile` points at the authors' machine).
 | Contiki-NG | commit `bd08e3273` | firmware build |
 | Java | needed to run Cooja (version not recorded) | optional simulation |
 
-Contiki-NG setup (run the last two lines from the GLIDE folder):
+Contiki-NG setup. Clone GLIDE first (next section), then run these from the GLIDE folder;
+none of these lines changes directory:
 
     git clone https://github.com/contiki-ng/contiki-ng.git ~/contiki-ng
-    cd ~/contiki-ng && git checkout bd08e3273 && git submodule update --init --recursive
+    git -C ~/contiki-ng checkout bd08e3273
+    git -C ~/contiki-ng submodule update --init --recursive
     git -C ~/contiki-ng apply "$PWD/contiki/contiki-ng-random-gcc13.patch"   # needed with gcc 13
     export CONTIKI_NG_PATH=~/contiki-ng
 
