@@ -307,9 +307,6 @@ exposure window. The paper measures this window quantitatively.
   reach — consistent with the factory-provisioning and pinned-bootstrap assumptions 
   stated in A2 and A4. The G↔Registry channel (revocation sync) is not covered by 
   the Tamarin model; its security properties are analyzed separately in G5 and A6.
-- **Formal verification** of the protocol (using ProVerif, Tamarin, or
-  similar) is left as future work. Security arguments in this document
-  are informal but constructively verifiable.
 - **Privacy (unlinkability)** is not addressed. Devices present a stable
   public key across all authentication sessions, permitting correlation
   by a passive observer. Unlinkable variants (e.g., via verifiable
