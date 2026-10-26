@@ -130,7 +130,6 @@ int device_auth_build_msg1(device_auth_state_t *state,
     size_t sp_len = 0;
     size_t msg1_len;
     int ret;
-    int i;
 
     t_start = RTIMER_NOW();
     ENERGEST_ON(ENERGEST_TYPE_CPU);
@@ -143,9 +142,14 @@ int device_auth_build_msg1(device_auth_state_t *state,
     uECC_compress(E_d_uncompressed, E_d_compressed, curve);
     memcpy(state->E_d, E_d_uncompressed, 64);
 
-    /* Step 2: Generate device nonce (fixed pattern for simulation) */
-    for(i = 0; i < AUTH_NONCE_LEN; i++) {
-        state->nonce_d[i] = (uint8_t)(i ^ 0xA5);
+    /* Step 2: Fresh device nonce from micro-ecc's RNG, the same source that
+     * generated e_d. Fail closed if no RNG is available. */
+    {
+        uECC_RNG_Function rng = uECC_get_rng();
+        if(!rng || !rng(state->nonce_d, AUTH_NONCE_LEN)) {
+            ENERGEST_OFF(ENERGEST_TYPE_CPU);
+            return AUTH_ERR_CRYPTO;
+        }
     }
 
     /* Step 3: Build signing payload = E_d || R || cert_info || nonce_d || Q_gw
