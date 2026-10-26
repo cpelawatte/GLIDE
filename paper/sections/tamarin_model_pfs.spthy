@@ -6,10 +6,10 @@
  * Tool: Tamarin Prover (https://tamarin-prover.github.io)
  * Version: Written for Tamarin 1.6.x+ (tested on 1.12.0)
  *
- * SCOPE: This model verifies the mutual authentication property and
- * session-key agreement. Secrecy is now modeled (Session_Key_Secrecy).
- * Forward secrecy and DoS resistance are future work. See
- * ban_logic_analysis.md for informal reasoning on those properties.
+ * SCOPE: device-origin authentication (G1), gateway authentication at
+ * the device, session-key agreement and secrecy, addressed-gateway
+ * agreement (cross-gateway relay), and replay (No_Replay). Forward
+ * secrecy and DoS resistance are not modelled.
  *
  * MODELING DECISIONS:
  * 1. ECQV reconstruction is modeled abstractly: the certificate carries
@@ -19,8 +19,8 @@
  *    against the pinned issuer public key Q_ca. This represents the
  *    guarantee ECQV provides (Q_dev is bound to R and cert_info by the
  *    issuer) without modeling the EC arithmetic (d*G = e*R + Q_ca)
- *    itself, which is outside the scope of this work and assumed correct
- *    per the informal BAN-logic analysis.
+ *    itself; ECQV is standardised in SEC 4, and its security reduction
+ *    is given by Brown, Gallant and Vanstone (Financial Cryptography 2001).
  * 2. HKDF is modeled as a random oracle (standard assumption).
  * 3. The Dolev-Yao adversary controls the network between D and G.
  * 4. Provisioning (issuer generating the certificate) is modeled as
@@ -251,8 +251,9 @@ lemma Executability:
         DeviceAuthenticatedGateway(D, G, sk) @i"
 
 /*
- * Lemma 2: Gateway injective agreement of Device 
- * (Goal G4, replay resistance) -- FALSIFIED; positive witness in Gateway_Replay_Possible
+ * Lemma 2: Gateway non-injective agreement on the addressed gateway
+ * (cross-gateway relay; not one of G1-G6). Falsified in the submitted
+ * model; holds once Q_gw is bound into the device signature.
  */
 lemma Gateway_Authenticates_Device:
     "All G Q_dev sk #i.
@@ -318,6 +319,11 @@ lemma sanity_gateway_reachable:
     "Ex G Q_dev sk #i. GatewayAuthenticatedDevice(G, Q_dev, sk) @i"
 
 
+/*
+ * Reachability check: the gateway can accept the same device twice.
+ * An honest device that authenticates twice also satisfies it, so it
+ * does not by itself show replay; No_Replay (below) does.
+ */
 lemma Gateway_Replay_Possible:
     exists-trace
     "Ex G Q_dev sk1 sk2 #i1 #i2.
@@ -333,5 +339,22 @@ lemma Gateway_Replay_Possible:
  * past session keys) is NOT modeled here. It requires explicit adversary
  * key-reveal rules and is deferred to future work per scope declaration.
  */
+
+/*
+ * Lemma 9: No_Replay (Goal G4) -- expected FALSIFIED (camera-ready).
+ * Exactly one MSG_1 is ever sent to gateway G, yet G accepts the same
+ * device twice: two acceptances from a single send can only be a replay.
+ * Gateway_Replay_Possible is a reachability check: an honest device
+ * authenticating twice also satisfies it, so it cannot show replay alone.
+ */
+lemma No_Replay:
+    "not (Ex G Q sk1 sk2 D msg1 n E #i1 #i2 #j.
+            GatewayAuthenticatedDevice(G, Q, sk1) @i1
+          & GatewayAuthenticatedDevice(G, Q, sk2) @i2
+          & not(#i1 = #i2)
+          & DeviceSentMSG1(D, G, msg1, n, E) @j
+          & #j < #i1 & #j < #i2
+          & (All D2 m2 n2 E2 #k.
+                DeviceSentMSG1(D2, G, m2, n2, E2) @k ==> #k = #j))"
 
 end
