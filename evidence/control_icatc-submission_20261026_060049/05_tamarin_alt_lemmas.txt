@@ -1,0 +1,8 @@
+  Executability (exists-trace): verified (14 steps)
+  Gateway_Authenticates_Device (all-traces): falsified - found trace (12 steps)
+  Device_Authenticates_Gateway (all-traces): verified (6 steps)
+  Session_Key_Agreement (all-traces): verified (10 steps)
+  Session_Key_Secrecy (all-traces): verified (34 steps)
+  Gateway_Authenticates_Device_Origin (all-traces): verified (13 steps)
+  sanity_gateway_reachable (exists-trace): verified (12 steps)
+  Gateway_Replay_Possible (exists-trace): verified (23 steps)

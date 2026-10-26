@@ -1,0 +1,3 @@
+   text	   data	    bss	    dec	    hex	filename
+  79888	   2516	  13601	  96005	  17705	build/cc2538dk/device_auth_main_footprint.cc2538dk
+RPL symbols in full image: 0
