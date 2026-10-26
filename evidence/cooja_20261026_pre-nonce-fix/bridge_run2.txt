@@ -1,0 +1,29 @@
+============================================================
+[BRIDGE] Cooja Serial Bridge — L-ECQV + DID EDHOC Demo
+============================================================
+[BRIDGE] Keystore loaded. Issuer: did:web:127.0.0.1%3A5000
+[BRIDGE] Listening on localhost:60001 — now start the Cooja simulation.
+[BRIDGE] Cooja connected from ('127.0.0.1', 45146)
+[MOTE]   Starting Contiki-NG-release/v5.1-63-gbd08e3273-dirty
+[MOTE]   ...
+[MOTE]   
+[MOTE]   === L-ECQV + DID Authentication Demo ===
+[MOTE]   Waiting for simulation to stabilize...
+[MOTE]   Building MSG_1...
+[MOTE]   MSG1:a7000101050358446469643a7765623a3132372e302e302e31253341353030307c7c323032362d30352d32365431303a33353a34382e3736313034372b30303a30307c7c333135333630303004582103e35355a08cade0a158dfe4a7157c3ff23aee02e9b322e49758a133c52ab8f651075840ce46326ae10498225ae7843aa862ea81df4d0f0cfaf7503eaf31305ab856b42b847675b7aa867b72de46496147d18eee9815d336174b9e791de384e5a1447fb20858210250f8f838fcbfd9d8d5efaef447b00ebd7342dc825cb756d9e099aee3f130d0210950a5a4a7a6a1a0a3a2adacafaea9a8abaa
+[BRIDGE] MSG_1 received: 233 bytes
+[BRIDGE] Device authenticated. DID: did:key:zDnaeUqraxLqGCmwHnMe2QoR5faenYUWHkodHfg4CWgtYnava
+[BRIDGE] MSG_2 built: 126 bytes
+[BRIDGE] MSG_2 sent.
+
+============================================================
+[BRIDGE] SESSION KEY: adf413e32e871ccbc2739cf681d64da2
+============================================================
+[BRIDGE] Mote output:
+[MOTE]   Waiting for MSG_2 from gateway...
+[MOTE]   
+[MOTE]   === Authentication Successful ===
+[MOTE]   SESSION_KEY:adf413e32e871ccbc2739cf681d64da2
+[MOTE]   === Done ===
+
+[BRIDGE] ✓ Handshake complete. Compare session keys above.

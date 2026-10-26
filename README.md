@@ -14,8 +14,10 @@ The protocol as described in the paper. The gateway public key `Q_gw` is bound
 into the device signature (cross-gateway relay fix) in the Python reference
 implementation (`src/edhoc_subset.py`), the firmware (`contiki/device_auth.c`)
 and the Tamarin model. The model also contains a replay lemma, `No_Replay`.
-Relative to the submitted version (tag `icatc-submission`), these are the only
-protocol and model changes; the rest is cleanup.
+The firmware draws the device nonce `n_d` from micro-ecc's RNG, the same source as
+the ephemeral key; the submitted firmware used a fixed pattern. Relative to the
+submitted version (tag `icatc-submission`), these are the only protocol, model and
+firmware changes; the rest is cleanup.
 
 ## Reproduce every figure (one command)
 
@@ -26,18 +28,19 @@ protocol and model changes; the rest is cleanup.
 
 Raw outputs are written to `evidence/<timestamp>/`. Toolchain used for the
 evidence below: Python 3.12.3, arm-none-eabi-gcc 13.2.1, Contiki-NG `bd08e3273`
-(with submodules, for micro-ecc), Tamarin 1.12.0, Maude 3.5.1. Optional:
+(with submodules, for micro-ecc; three `LOG_DBG` lines in `os/lib/random.c` were
+removed locally because they do not compile with gcc 13, with no functional effect), Tamarin 1.12.0, Maude 3.5.1. Optional:
 `MAUDE_ALT=/path/to/second/maude` repeats the Tamarin run with a second engine.
 
-## Expected results (measured at commit `34c5009`)
+## Expected results (measured at commit `b6b11a0`)
 
 | Quantity | Value |
 |---|---|
 | Credential (R 33 B + cert_info 66 B, issuer `did:web:issuer.example`) | 99 B |
 | MSG_1 / MSG_2 / handshake | 231 / 126 / 357 B |
 | Python test suite (host) | 166 passed |
-| CC2538 full image, ROM (text) / RAM (data + bss) | 79,952 / 16,117 B |
-| CC2538 protocol-isolated image, ROM / RAM | 64,387 / 9,963 B |
+| CC2538 full image, ROM (text) / RAM (data + bss) | 79,960 / 16,117 B |
+| CC2538 protocol-isolated image, ROM / RAM | 64,403 / 9,963 B |
 
 | Lemma | Type | Result | Steps | Meaning |
 |---|---|---|---|---|
@@ -53,13 +56,32 @@ evidence below: Python 3.12.3, arm-none-eabi-gcc 13.2.1, Contiki-NG `bd08e3273`
 
 ## Evidence in this tag
 
-- `evidence/20261026_064729/`: camera-ready run (commit `34c5009`), all figures above.
+- `evidence/20261026_072618/`: camera-ready run (commit `b6b11a0`), all figures above.
+- `evidence/20261026_064729/`: run before the nonce fix (commit `34c5009`); identical
+  except ROM 79,952 / 64,387 B. The relay fix alone costs +64 B over the submitted
+  version; the nonce fix adds +8 B (full) and +16 B (isolated).
 - `evidence/control_icatc-submission_20261026_060049/`: the same script on the
   submitted version (tag `icatc-submission`). It reproduces every figure in the
   submitted paper, including the relay lemma falsified at 12 steps, 165 tests and
   ROM 79,888 / 64,323 B.
 
-The tagged commit adds only this README and the evidence files to `34c5009`.
+The tagged commit adds only this README and evidence files to `b6b11a0`.
+
+## Cooja handshake (simulation)
+
+    cp contiki/sim/gateway_keystore.sim.json gateway_keystore.json   # simulation-only keys
+    python -m scripts.cooja_serial_bridge                            # terminal 1, repo root
+    cd /path/to/contiki-ng/tools/cooja && ./gradlew run              # terminal 2: open contiki/sim/glide.csc, Start
+
+The bridge runs the Python gateway; the Cooja mote runs `device_auth_main.c` with the
+credentials in `contiki/credentials.h`. A successful run shows the gateway accepting
+MSG_1 and both sides deriving the same session key. Because the gateway verifies the
+device signature over `E_d || R || cert_info || nonce_d || Q_gw`, a successful
+handshake also confirms that the firmware binds `Q_gw`. The embedded credential uses
+the local demo issuer `did:web:127.0.0.1%3A5000`, so MSG_1 is 233 B in this run; the
+paper's 231 B uses the benchmark issuer. Evidence: `evidence/cooja_20261026_final/`
+(two runs: fresh nonces, matching session keys). `evidence/cooja_20261026_pre-nonce-fix/`
+shows the earlier fixed nonce.
 
 ## Notes
 
