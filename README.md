@@ -19,6 +19,30 @@ the ephemeral key; the submitted firmware used a fixed pattern. Relative to the
 submitted version (tag `icatc-submission`), these are the only protocol, model and
 firmware changes; the rest is cleanup.
 
+## Prerequisites
+
+Install these first. Paths differ per machine: set `CONTIKI_NG_PATH` and `MAUDE`
+yourself (the default in `contiki/Makefile` points at the authors' machine).
+
+| Tool | Version used for the evidence | Used for |
+|---|---|---|
+| Python | 3.12.3 | tests, Python gateway |
+| Tamarin prover | 1.12.0 (tamarin-prover.com) | formal model |
+| Maude | 3.5.1 (maude.cs.illinois.edu). Tamarin 1.12.0 accepts 2.7.1, 3.0, 3.1, 3.2.1, 3.2.2, 3.3, 3.3.1, 3.4, 3.5, 3.5.1 | Tamarin back end |
+| arm-none-eabi-gcc | 13.2.1 (Ubuntu package 15:13.2.rel1-2) | CC2538 firmware size |
+| Contiki-NG | commit `bd08e3273` | firmware build |
+| Java | needed to run Cooja (version not recorded) | optional simulation |
+
+Contiki-NG setup (run the last two lines from the GLIDE folder):
+
+    git clone https://github.com/contiki-ng/contiki-ng.git ~/contiki-ng
+    cd ~/contiki-ng && git checkout bd08e3273 && git submodule update --init --recursive
+    git -C ~/contiki-ng apply "$PWD/contiki/contiki-ng-random-gcc13.patch"   # needed with gcc 13
+    export CONTIKI_NG_PATH=~/contiki-ng
+
+The patch removes three `LOG_DBG` lines in `os/lib/random.c` that do not compile with
+gcc 13; it has no functional effect.
+
 ## Reproduce every figure (one command)
 
     git clone https://github.com/cpelawatte/GLIDE.git && cd GLIDE
@@ -28,9 +52,14 @@ firmware changes; the rest is cleanup.
 
 Raw outputs are written to `evidence/<timestamp>/`. Toolchain used for the
 evidence below: Python 3.12.3, arm-none-eabi-gcc 13.2.1, Contiki-NG `bd08e3273`
-(with submodules, for micro-ecc; three `LOG_DBG` lines in `os/lib/random.c` were
-removed locally because they do not compile with gcc 13, with no functional effect), Tamarin 1.12.0, Maude 3.5.1. Optional:
+(with submodules, for micro-ecc; see Prerequisites for the one-file gcc 13 patch), Tamarin 1.12.0, Maude 3.5.1. Optional:
 `MAUDE_ALT=/path/to/second/maude` repeats the Tamarin run with a second engine.
+
+Runtime on the evidence machine: Tamarin about 70 to 80 s per Maude engine, plus two
+firmware builds. A run passes if the printed figures equal the tables below and the
+summary line reads `verified: 8   falsified: 1`. ROM and RAM depend on the compiler
+version, so other versions may differ by some bytes. Tamarin verdicts and step counts
+do not depend on the compiler (they do depend on the Tamarin version).
 
 ## Expected results (measured at commit `b6b11a0`)
 
@@ -54,6 +83,17 @@ removed locally because they do not compile with gcc 13, with no functional effe
 | Gateway_Replay_Possible | exists-trace | verified | 23 | reachability: two acceptances of one device |
 | No_Replay | all-traces | falsified | 21 | replay is possible (G4 not achieved) |
 
+## Where each paper figure comes from
+
+Files inside `evidence/<run>/`:
+
+| Paper | File |
+|---|---|
+| Table II (lemma verdicts, steps) | `05_tamarin_main_lemmas.txt` (raw: `05_tamarin_main.txt`) |
+| Table III credential, MSG_1, MSG_2 | `01_credential_size.txt`, `02_wire_sizes.txt` |
+| Table III ROM / RAM | `04_footprint_full.txt`, `04_footprint_isolated.txt` |
+| Test count | `03_test_suite.txt` |
+
 ## Evidence in this tag
 
 - `evidence/20261026_072618/`: camera-ready run (commit `b6b11a0`), all figures above.
@@ -65,7 +105,7 @@ removed locally because they do not compile with gcc 13, with no functional effe
   submitted paper, including the relay lemma falsified at 12 steps, 165 tests and
   ROM 79,888 / 64,323 B.
 
-The tagged commit adds only this README and evidence files to `b6b11a0`.
+The tagged commit adds only this README, the Contiki-NG patch and evidence files to `b6b11a0`.
 
 ## Cooja handshake (simulation)
 
